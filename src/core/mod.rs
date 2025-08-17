@@ -33,6 +33,7 @@ impl GameState {
         event_bus.subscribe(SystemId::PlanetManager, events::EventType::StateChanged);
         event_bus.subscribe(SystemId::ShipManager, events::EventType::PlayerCommand);
         event_bus.subscribe(SystemId::PhysicsEngine, events::EventType::SimulationEvent);
+        event_bus.subscribe(SystemId::TimeManager, events::EventType::PlayerCommand);
         
         Ok(Self {
             event_bus,

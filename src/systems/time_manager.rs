@@ -4,10 +4,10 @@ use crate::core::types::*;
 
 pub struct TimeManager {
     tick: u64,
-    paused: bool,
-    speed_multiplier: f32,
-    accumulated_time: f32,
-    tick_duration: f32, // 0.1 seconds
+    pub(crate) paused: bool,
+    pub(crate) speed_multiplier: f32,
+    pub(crate) accumulated_time: f32,
+    pub(crate) tick_duration: f32, // 0.1 seconds
 }
 
 impl TimeManager {

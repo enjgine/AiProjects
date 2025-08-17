@@ -69,9 +69,9 @@ pub enum SystemId {
 }
 
 pub struct EventBus {
-    queued_events: VecDeque<GameEvent>,
-    subscribers: HashMap<SystemId, Vec<EventType>>,
-    event_history: VecDeque<GameEvent>,
+    pub queued_events: VecDeque<GameEvent>,
+    pub subscribers: HashMap<SystemId, Vec<EventType>>,
+    pub event_history: VecDeque<GameEvent>,
     history_limit: usize,
 }
 
@@ -113,8 +113,14 @@ impl EventBus {
             // Route to subscribed systems
             for (system, subscriptions) in &self.subscribers {
                 if subscriptions.contains(&event_type) {
-                    // In full implementation, call appropriate system handler
-                    // For skeleton, just acknowledge
+                    match system {
+                        SystemId::TimeManager => {
+                            state.time_manager.handle_event(&event)?;
+                        }
+                        _ => {
+                            // Other systems will be handled when implemented
+                        }
+                    }
                 }
             }
         }
