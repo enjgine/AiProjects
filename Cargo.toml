@@ -1,0 +1,11 @@
+[package]
+name = "stellar-dominion"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+macroquad = "0.4"
+
+[[bin]]
+name = "stellar-dominion"
+path = "src/main.rs"
