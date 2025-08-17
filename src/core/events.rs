@@ -117,6 +117,9 @@ impl EventBus {
                         SystemId::TimeManager => {
                             state.time_manager.handle_event(&event)?;
                         }
+                        SystemId::PlanetManager => {
+                            state.planet_manager.handle_event(&event)?;
+                        }
                         _ => {
                             // Other systems will be handled when implemented
                         }

@@ -30,6 +30,8 @@ impl GameState {
         let mut event_bus = EventBus::new();
         
         // Register system subscriptions
+        event_bus.subscribe(SystemId::PlanetManager, events::EventType::PlayerCommand);
+        event_bus.subscribe(SystemId::PlanetManager, events::EventType::SimulationEvent);
         event_bus.subscribe(SystemId::PlanetManager, events::EventType::StateChanged);
         event_bus.subscribe(SystemId::ShipManager, events::EventType::PlayerCommand);
         event_bus.subscribe(SystemId::PhysicsEngine, events::EventType::SimulationEvent);
