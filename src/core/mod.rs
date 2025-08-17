@@ -2,8 +2,9 @@
 pub mod events;
 pub mod types;
 
-use events::{EventBus, GameEvent, SystemId};
-use types::*;
+// Re-export commonly used types
+pub use events::{EventBus, GameEvent, SystemId, PlayerCommand, SimulationEvent, StateChange};
+pub use types::*;
 use std::collections::VecDeque;
 
 // Import managers and systems
@@ -35,6 +36,7 @@ impl GameState {
         event_bus.subscribe(SystemId::PlanetManager, events::EventType::StateChanged);
         event_bus.subscribe(SystemId::ShipManager, events::EventType::PlayerCommand);
         event_bus.subscribe(SystemId::PhysicsEngine, events::EventType::SimulationEvent);
+        event_bus.subscribe(SystemId::PhysicsEngine, events::EventType::PlayerCommand);
         event_bus.subscribe(SystemId::TimeManager, events::EventType::PlayerCommand);
         
         Ok(Self {
@@ -62,14 +64,19 @@ impl GameState {
         self.combat_resolver.update(delta, &mut self.event_bus)?;
         self.time_manager.update(delta, &mut self.event_bus)?;
         
-        // Process all queued events
-        self.event_bus.process_events(self)?;
+        // Process all queued events - temporarily move event_bus to avoid borrow conflicts
+        let mut event_bus = std::mem::replace(&mut self.event_bus, EventBus::new());
+        event_bus.process_events(self)?;
+        self.event_bus = event_bus;
         
         Ok(())
     }
     
     pub fn render(&mut self, interpolation: f32) -> GameResult<()> {
-        self.ui_renderer.render(self, interpolation)?;
+        // Temporarily move ui_renderer to avoid borrow conflicts
+        let mut ui_renderer = std::mem::replace(&mut self.ui_renderer, UIRenderer::new());
+        ui_renderer.render(self, interpolation)?;
+        self.ui_renderer = ui_renderer;
         Ok(())
     }
 }

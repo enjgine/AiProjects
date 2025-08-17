@@ -18,7 +18,7 @@ impl ResourcePanel {
     
     pub fn render(&mut self, state: &GameState, events: &mut EventBus) -> GameResult<()> {
         if !self.visible {
-            return Ok();
+            return Ok(());
         }
         
         // Update panel position to stay at bottom of screen
@@ -131,7 +131,7 @@ impl ResourcePanel {
         
         // Current tick
         draw_text(
-            &format!("Tick: {}", state.time_manager.tick),
+            &format!("Tick: {}", state.time_manager.get_tick()),
             right_x,
             y + 25.0,
             14.0,
@@ -145,7 +145,7 @@ impl ResourcePanel {
         let mut total = ResourceBundle::default();
         
         // Sum resources from all player-controlled planets
-        for planet in &state.planet_manager.planets {
+        for planet in state.planet_manager.get_all_planets() {
             if let Some(controller) = planet.controller {
                 // Assuming player is faction 0
                 if controller == 0 {

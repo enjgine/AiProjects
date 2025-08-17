@@ -18,7 +18,7 @@ impl ShipPanel {
     
     pub fn render(&mut self, ship: &Ship, events: &mut EventBus) -> GameResult<()> {
         if !self.visible {
-            return Ok();
+            return Ok(());
         }
         
         // Draw panel background

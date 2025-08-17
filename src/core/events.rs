@@ -1,5 +1,6 @@
 // src/core/events.rs
 use super::types::*;
+use super::GameSystem;
 use std::collections::{HashMap, VecDeque};
 
 #[derive(Debug, Clone)]
@@ -22,6 +23,8 @@ pub enum PlayerCommand {
     ColonizePlanet { ship: ShipId, planet: PlanetId },
     SetGameSpeed(f32),
     PauseGame(bool),
+    SaveGame,
+    LoadGame,
 }
 
 #[derive(Debug, Clone)]
@@ -119,6 +122,9 @@ impl EventBus {
                         }
                         SystemId::PlanetManager => {
                             state.planet_manager.handle_event(&event)?;
+                        }
+                        SystemId::PhysicsEngine => {
+                            state.physics_engine.handle_event(&event)?;
                         }
                         _ => {
                             // Other systems will be handled when implemented

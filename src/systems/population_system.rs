@@ -35,7 +35,7 @@ impl PopulationSystem {
             GameEvent::SimulationEvent(sim_event) => {
                 match sim_event {
                     crate::core::events::SimulationEvent::TickCompleted(_) => {
-                        self.process_growth(event_bus)?;
+                        // Handle tick event - processing happens in update()
                     }
                     crate::core::events::SimulationEvent::ShipArrived { ship, destination: _ } => {
                         self.process_migration(*ship)?;

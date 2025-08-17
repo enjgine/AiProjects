@@ -57,7 +57,7 @@ impl ResourceSystem {
             GameEvent::SimulationEvent(sim_event) => {
                 match sim_event {
                     crate::core::events::SimulationEvent::TickCompleted(_) => {
-                        self.process_production(event_bus)?;
+                        // Handle tick event - processing happens in update()
                     }
                     _ => {}
                 }

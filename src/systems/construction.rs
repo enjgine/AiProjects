@@ -77,7 +77,7 @@ impl ConstructionSystem {
             GameEvent::SimulationEvent(sim_event) => {
                 match sim_event {
                     crate::core::events::SimulationEvent::TickCompleted(tick) => {
-                        self.process_completions(*tick, event_bus)?;
+                        // Handle tick event - processing happens in update()
                     }
                     _ => {}
                 }

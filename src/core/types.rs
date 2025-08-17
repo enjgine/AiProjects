@@ -126,7 +126,7 @@ impl WorkerAllocation {
 }
 
 // Buildings and construction
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BuildingType {
     Mine,
     Farm,

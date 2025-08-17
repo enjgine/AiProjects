@@ -18,7 +18,7 @@ impl PlanetPanel {
     
     pub fn render(&mut self, planet: &Planet, events: &mut EventBus) -> GameResult<()> {
         if !self.visible {
-            return Ok();
+            return Ok(());
         }
         
         // Draw panel background
