@@ -5,7 +5,6 @@ pub mod types;
 // Re-export commonly used types
 pub use events::{EventBus, GameEvent, SystemId, PlayerCommand, SimulationEvent, StateChange};
 pub use types::*;
-use std::collections::VecDeque;
 
 // Import managers and systems
 use crate::managers::{PlanetManager, ShipManager, FactionManager};
@@ -65,8 +64,10 @@ impl GameState {
     }
     
     pub fn fixed_update(&mut self, delta: f32) -> GameResult<()> {
-        // Strict update order per architecture
+        // Process input first
         self.ui_renderer.process_input(&mut self.event_bus)?;
+        
+        // Update systems in strict order per architecture
         self.physics_engine.update(delta, &mut self.event_bus)?;
         self.resource_system.update(delta, &mut self.event_bus)?;
         self.population_system.update(delta, &mut self.event_bus)?;
@@ -74,164 +75,97 @@ impl GameState {
         self.combat_resolver.update(delta, &mut self.event_bus)?;
         self.time_manager.update(delta, &mut self.event_bus)?;
         
-        // Process all queued events - temporarily move event_bus to avoid borrow conflicts
-        let mut event_bus = std::mem::replace(&mut self.event_bus, EventBus::new());
-        event_bus.process_events(self)?;
-        self.event_bus = event_bus;
+        // Process all queued events after system updates
+        self.process_queued_events()?;
         
         Ok(())
     }
     
-    pub fn process_tick_production(&mut self) -> GameResult<()> {
-        // Handle resource production during tick processing
-        let mut event_bus = std::mem::replace(&mut self.event_bus, EventBus::new());
-        self.resource_system.process_production(&mut self.planet_manager, &mut event_bus)?;
-        self.event_bus = event_bus;
-        Ok(())
-    }
-    
-    pub fn process_resource_transfer(&mut self, from: PlanetId, to: PlanetId, resources: ResourceBundle) -> GameResult<()> {
-        // Handle resource transfers
-        let mut event_bus = std::mem::replace(&mut self.event_bus, EventBus::new());
-        self.resource_system.process_transfer(from, to, resources, &mut self.planet_manager, &mut event_bus)?;
-        self.event_bus = event_bus;
-        Ok(())
-    }
-    
-    pub fn process_ship_cargo_loading(&mut self, ship_id: ShipId, planet_id: PlanetId, resources: ResourceBundle) -> GameResult<()> {
-        // Handle ship cargo loading
-        let mut event_bus = std::mem::replace(&mut self.event_bus, EventBus::new());
-        self.resource_system.process_ship_loading(ship_id, planet_id, resources, 
-                                                 &mut self.planet_manager, 
-                                                 &mut self.ship_manager, 
-                                                 &mut event_bus)?;
-        self.event_bus = event_bus;
-        Ok(())
-    }
-    
-    pub fn process_ship_cargo_unloading(&mut self, ship_id: ShipId, planet_id: PlanetId) -> GameResult<()> {
-        // Handle ship cargo unloading
-        let mut event_bus = std::mem::replace(&mut self.event_bus, EventBus::new());
-        self.resource_system.process_ship_unloading(ship_id, planet_id,
-                                                   &mut self.planet_manager,
-                                                   &mut self.ship_manager,
-                                                   &mut event_bus)?;
-        self.event_bus = event_bus;
-        Ok(())
-    }
-    
-    pub fn process_population_growth(&mut self, tick: u64) -> GameResult<()> {
-        // Handle population growth during tick processing
-        let mut event_bus = std::mem::replace(&mut self.event_bus, EventBus::new());
-        self.population_system.process_growth(tick, &mut self.planet_manager, &mut event_bus)?;
-        self.event_bus = event_bus;
-        Ok(())
-    }
-    
-    pub fn process_worker_allocation(&mut self, planet_id: PlanetId, allocation: WorkerAllocation) -> GameResult<()> {
-        // Handle worker allocation changes
-        let mut event_bus = std::mem::replace(&mut self.event_bus, EventBus::new());
-        self.population_system.process_allocation(planet_id, allocation, &mut self.planet_manager, &mut event_bus)?;
-        self.event_bus = event_bus;
-        Ok(())
-    }
-    
-    pub fn process_population_migration(&mut self, ship_id: ShipId) -> GameResult<()> {
-        // Handle population migration when transport ships arrive
-        let mut event_bus = std::mem::replace(&mut self.event_bus, EventBus::new());
-        self.population_system.process_migration(ship_id, &mut self.planet_manager, &mut self.ship_manager, &mut event_bus)?;
-        self.event_bus = event_bus;
-        Ok(())
-    }
-    
-    pub fn process_combat_resolution(&mut self, attacker: ShipId, defender: ShipId) -> GameResult<()> {
-        // Handle detailed combat resolution with access to ships and planets
-        let mut event_bus = std::mem::replace(&mut self.event_bus, EventBus::new());
+    fn process_queued_events(&mut self) -> GameResult<()> {
+        // Process events while maintaining architectural boundaries
+        let events_to_process: Vec<GameEvent> = self.event_bus.queued_events.drain(..).collect();
         
-        // Get ship information for combat calculations
-        let attacker_ship = self.ship_manager.get_ship(attacker)?;
-        let defender_ship = self.ship_manager.get_ship(defender)?;
-        
-        // Calculate combat strengths
-        let attacker_strength = self.combat_resolver.get_combat_modifier(attacker_ship.owner) * 
-            match attacker_ship.ship_class {
-                ShipClass::Scout => 1.0,
-                ShipClass::Transport => 0.5,
-                ShipClass::Warship => 5.0,
-                ShipClass::Colony => 0.1,
-            };
-            
-        let defender_strength = self.combat_resolver.get_combat_modifier(defender_ship.owner) * 
-            match defender_ship.ship_class {
-                ShipClass::Scout => 1.0,
-                ShipClass::Transport => 0.5,
-                ShipClass::Warship => 5.0,
-                ShipClass::Colony => 0.1,
-            };
-        
-        // Determine outcome using CombatResolver logic
-        let attacker_wins = attacker_strength >= defender_strength * 1.5;
-        
-        let mut attacker_losses = Vec::new();
-        let mut defender_losses = Vec::new();
-        
-        if attacker_wins {
-            // Attacker wins: 30% attacker losses, 50% defender losses
-            // For simplicity, destroy the defender ship
-            defender_losses.push(defender);
-        } else {
-            // Defender wins: 50% attacker losses, 30% defender losses
-            // For simplicity, destroy the attacker ship
-            attacker_losses.push(attacker);
+        for event in events_to_process {
+            self.route_event_to_systems(event)?;
         }
         
-        let outcome = CombatOutcome {
-            winner: if attacker_wins { attacker_ship.owner } else { defender_ship.owner },
-            attacker_losses,
-            defender_losses,
+        Ok(())
+    }
+    
+    fn route_event_to_systems(&mut self, event: GameEvent) -> GameResult<()> {
+        let event_type = match &event {
+            GameEvent::PlayerCommand(_) => events::EventType::PlayerCommand,
+            GameEvent::SimulationEvent(_) => events::EventType::SimulationEvent,
+            GameEvent::StateChanged(_) => events::EventType::StateChanged,
         };
         
-        // Emit the combat resolved event
-        event_bus.queue_event(GameEvent::SimulationEvent(
-            SimulationEvent::CombatResolved {
-                attacker,
-                defender,
-                outcome,
+        // First collect all systems that need to handle this event
+        let mut systems_to_notify = Vec::new();
+        
+        // Add systems in update order
+        for &system_id in &self.event_bus.update_order {
+            if let Some(subscriptions) = self.event_bus.subscribers.get(&system_id) {
+                if subscriptions.contains(&event_type) {
+                    systems_to_notify.push(system_id);
+                }
             }
-        ));
+        }
         
-        self.event_bus = event_bus;
+        // Add managers (no specific order)
+        for (&system_id, subscriptions) in &self.event_bus.subscribers {
+            if !self.event_bus.update_order.contains(&system_id) && subscriptions.contains(&event_type) {
+                systems_to_notify.push(system_id);
+            }
+        }
+        
+        // Now notify all systems
+        for system_id in systems_to_notify {
+            self.handle_system_event(system_id, &event)?;
+        }
+        
         Ok(())
     }
     
-    pub fn process_save_game(&mut self) -> GameResult<()> {
-        // Save the current game state
-        self.save_system.save_game(self)?;
+    fn handle_system_event(&mut self, system_id: SystemId, event: &GameEvent) -> GameResult<()> {
+        match system_id {
+            SystemId::TimeManager => self.time_manager.handle_event(event),
+            SystemId::PlanetManager => self.planet_manager.handle_event(event),
+            SystemId::ShipManager => self.ship_manager.handle_event(event),
+            SystemId::FactionManager => self.faction_manager.handle_event(event),
+            SystemId::PhysicsEngine => self.physics_engine.handle_event(event),
+            SystemId::ResourceSystem => self.resource_system.handle_event(event),
+            SystemId::PopulationSystem => self.population_system.handle_event(event),
+            SystemId::ConstructionSystem => self.construction_system.handle_event(event),
+            SystemId::CombatResolver => self.combat_resolver.handle_event(event),
+            SystemId::SaveSystem => self.save_system.handle_event(event),
+            SystemId::UIRenderer => self.ui_renderer.handle_event(event),
+        }
+    }
+    
+    pub fn queue_event(&mut self, event: GameEvent) {
+        self.event_bus.queue_event(event);
+    }
+    
+    pub fn get_current_tick(&self) -> u64 {
+        self.time_manager.get_current_tick()
+    }
+    
+    pub fn save_game(&mut self) -> GameResult<()> {
+        self.queue_event(GameEvent::PlayerCommand(PlayerCommand::SaveGame));
         Ok(())
     }
     
-    pub fn process_load_game(&mut self) -> GameResult<()> {
-        // Load game state from save file
-        let save_data = self.save_system.load_game()?;
-        
-        // Restore the complete game state
-        self.time_manager.set_tick(save_data.tick);
-        self.planet_manager.load_planets(save_data.planets)?;
-        self.ship_manager.load_ships(save_data.ships)?;
-        self.faction_manager.load_factions(save_data.factions)?;
-        
-        // Emit GameLoaded event
-        self.event_bus.queue_event(GameEvent::StateChanged(StateChange::GameLoaded));
-        
+    pub fn load_game(&mut self) -> GameResult<()> {
+        self.queue_event(GameEvent::PlayerCommand(PlayerCommand::LoadGame));
         Ok(())
     }
     
     pub fn render(&mut self, interpolation: f32) -> GameResult<()> {
-        // Temporarily move ui_renderer to avoid borrow conflicts
+        // Temporarily extract ui_renderer to avoid borrow conflicts
         let mut ui_renderer = std::mem::replace(&mut self.ui_renderer, UIRenderer::new());
-        ui_renderer.render(self, interpolation)?;
+        let result = ui_renderer.render(self, interpolation);
         self.ui_renderer = ui_renderer;
-        Ok(())
+        result
     }
 }
 

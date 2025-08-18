@@ -13,15 +13,32 @@ pub struct PlanetManager {
 impl PlanetManager {
     pub fn new() -> Self {
         Self {
-            planets: Vec::new(),
+            planets: Vec::with_capacity(100), // Pre-allocate for performance
             next_id: 0,
-            planet_index: HashMap::new(),
+            planet_index: HashMap::with_capacity(100),
         }
     }
     
     // CRUD Operations
+    // Helper method to get planet index with consistent error handling
+    fn get_planet_index(&self, id: PlanetId) -> GameResult<usize> {
+        self.planet_index.get(&id)
+            .copied()
+            .ok_or_else(|| GameError::InvalidTarget(format!("Planet {} not found", id)))
+    }
+    
+    // Helper method for consistent building slot calculation
+    fn calculate_building_slots(&self, population: i32) -> usize {
+        (10 + (population / 10000)) as usize
+    }
+    
     pub fn create_planet(&mut self, position: OrbitalElements, controller: Option<FactionId>) -> GameResult<PlanetId> {
         let id = self.next_id;
+        
+        // Check for ID overflow
+        if self.next_id == u32::MAX {
+            return Err(GameError::SystemError("Maximum number of planets reached".into()));
+        }
         self.next_id += 1;
         
         let planet = Planet {
@@ -56,108 +73,159 @@ impl PlanetManager {
         Ok(&self.planets[*index])
     }
     
-    pub fn get_planet_mut(&mut self, id: PlanetId) -> GameResult<&mut Planet> {
-        let index = self.planet_index.get(&id)
-            .ok_or_else(|| GameError::InvalidTarget(format!("Planet {} not found", id)))?;
-        Ok(&mut self.planets[*index])
-    }
+    // REMOVED: get_planet_mut violates manager pattern
+    // Use specific modification methods instead
     
     pub fn get_all_planets(&self) -> &Vec<Planet> {
         &self.planets
+    }
+    
+    // Get planet count for efficiency (avoid cloning when just need count)
+    pub fn get_planet_count(&self) -> usize {
+        self.planets.len()
+    }
+    
+    // More efficient method when you only need planet IDs
+    pub fn get_all_planet_ids(&self) -> Vec<PlanetId> {
+        self.planets.iter().map(|p| p.id).collect()
     }
     
     pub fn get_all_planets_cloned(&self) -> GameResult<Vec<Planet>> {
         Ok(self.planets.clone())
     }
     
+    // Safe planet modification without exposing mutable references
+    pub fn modify_planet<F>(&mut self, id: PlanetId, modifier: F) -> GameResult<()>
+    where
+        F: FnOnce(&mut Planet) -> GameResult<()>,
+    {
+        let index = self.get_planet_index(id)?;
+        let planet = &mut self.planets[index];
+        modifier(planet)?;
+        
+        // Validate planet state after modification
+        planet.resources.validate()?;
+        planet.population.allocation.validate(planet.population.total)?;
+        
+        Ok(())
+    }
+    
+    // Validate all planets for consistency
+    pub fn validate_all_planets(&self) -> GameResult<()> {
+        for planet in &self.planets {
+            planet.resources.validate()?;
+            planet.population.allocation.validate(planet.population.total)?;
+            
+            // Check building slot constraints
+            let max_slots = self.calculate_building_slots(planet.population.total);
+            if planet.developments.len() > max_slots {
+                return Err(GameError::InvalidOperation(
+                    format!("Planet {} has {} buildings but only {} slots available", 
+                           planet.id, planet.developments.len(), max_slots)
+                ));
+            }
+        }
+        Ok(())
+    }
+    
     pub fn get_planets_by_faction(&self, faction: FactionId) -> Vec<&Planet> {
-        self.planets.iter()
-            .filter(|p| p.controller == Some(faction))
-            .collect()
+        let mut result = Vec::new();
+        for planet in &self.planets {
+            if planet.controller == Some(faction) {
+                result.push(planet);
+            }
+        }
+        result
     }
     
     // Resource Management
     pub fn add_resources(&mut self, id: PlanetId, resources: ResourceBundle) -> GameResult<()> {
-        let index = self.planet_index.get(&id)
-            .ok_or_else(|| GameError::InvalidTarget(format!("Planet {} not found", id)))?;
+        // Validate input resources are non-negative
+        resources.validate_non_negative()?;
         
-        let planet = &mut self.planets[*index];
+        let index = self.get_planet_index(id)?;
+        let planet = &mut self.planets[index];
         
-        // Check storage capacity for each resource
-        let new_minerals = planet.resources.current.minerals + resources.minerals;
-        let new_food = planet.resources.current.food + resources.food;
-        let new_energy = planet.resources.current.energy + resources.energy;
-        let new_alloys = planet.resources.current.alloys + resources.alloys;
-        let new_components = planet.resources.current.components + resources.components;
-        let new_fuel = planet.resources.current.fuel + resources.fuel;
+        // Check for potential overflow before addition
+        if planet.resources.current.minerals.saturating_add(resources.minerals) == i32::MAX ||
+           planet.resources.current.food.saturating_add(resources.food) == i32::MAX ||
+           planet.resources.current.energy.saturating_add(resources.energy) == i32::MAX ||
+           planet.resources.current.alloys.saturating_add(resources.alloys) == i32::MAX ||
+           planet.resources.current.components.saturating_add(resources.components) == i32::MAX ||
+           planet.resources.current.fuel.saturating_add(resources.fuel) == i32::MAX {
+            return Err(GameError::InvalidOperation("Resource addition would cause overflow".into()));
+        }
         
-        if new_minerals > planet.resources.capacity.minerals ||
-           new_food > planet.resources.capacity.food ||
-           new_energy > planet.resources.capacity.energy ||
-           new_alloys > planet.resources.capacity.alloys ||
-           new_components > planet.resources.capacity.components ||
-           new_fuel > planet.resources.capacity.fuel {
+        // Use helper method to check if we can store the additional resources
+        if !planet.resources.can_store(&resources) {
             return Err(GameError::InvalidOperation("Storage capacity exceeded".into()));
         }
         
-        planet.resources.current.minerals = new_minerals;
-        planet.resources.current.food = new_food;
-        planet.resources.current.energy = new_energy;
-        planet.resources.current.alloys = new_alloys;
-        planet.resources.current.components = new_components;
-        planet.resources.current.fuel = new_fuel;
+        // Use ResourceBundle's built-in add method for safer arithmetic
+        planet.resources.current.add(&resources)?;
         
         Ok(())
     }
     
     pub fn remove_resources(&mut self, id: PlanetId, resources: ResourceBundle) -> GameResult<()> {
-        let index = self.planet_index.get(&id)
-            .ok_or_else(|| GameError::InvalidTarget(format!("Planet {} not found", id)))?;
+        // Validate input resources are non-negative
+        resources.validate_non_negative()?;
         
-        let planet = &mut self.planets[*index];
+        let index = self.get_planet_index(id)?;
+        let planet = &mut self.planets[index];
         
-        // Validate we can afford the cost
-        if !planet.resources.current.can_afford(&resources) {
-            return Err(GameError::InsufficientResources {
-                required: resources,
-                available: planet.resources.current,
-            });
-        }
-        
+        // Use ResourceBundle's built-in subtract method which includes affordability check
         planet.resources.current.subtract(&resources)?;
         Ok(())
     }
     
     // Population Management
     pub fn update_population(&mut self, id: PlanetId, amount: i32) -> GameResult<()> {
-        let index = self.planet_index.get(&id)
-            .ok_or_else(|| GameError::InvalidTarget(format!("Planet {} not found", id)))?;
+        let index = self.get_planet_index(id)?;
+        let planet = &mut self.planets[index];
         
-        let planet = &mut self.planets[*index];
-        let new_total = planet.population.total + amount;
+        // Check for overflow before addition
+        let new_total = planet.population.total.saturating_add(amount);
         
         if new_total < 0 {
             return Err(GameError::InvalidOperation("Population cannot be negative".into()));
         }
         
+        if new_total == i32::MAX && amount > 0 {
+            return Err(GameError::InvalidOperation("Population update would cause overflow".into()));
+        }
+        
         planet.population.total = new_total;
+        
+        // If population changed, we may need to adjust worker allocation to stay valid
+        if planet.population.allocation.validate(new_total).is_err() {
+            // Reset allocation to all unassigned workers
+            planet.population.allocation = WorkerAllocation {
+                agriculture: 0,
+                mining: 0,
+                industry: 0,
+                research: 0,
+                military: 0,
+                unassigned: new_total,
+            };
+        }
+        
         Ok(())
     }
     
     pub fn set_worker_allocation(&mut self, id: PlanetId, allocation: WorkerAllocation) -> GameResult<()> {
-        let index = self.planet_index.get(&id)
-            .ok_or_else(|| GameError::InvalidTarget(format!("Planet {} not found", id)))?;
-        
-        let planet = &mut self.planets[*index];
+        let index = self.get_planet_index(id)?;
+        let planet = &mut self.planets[index];
         
         // Validate allocation matches total population
         allocation.validate(planet.population.total)?;
         
-        // Ensure minimum 10% unassigned workers
-        let min_unassigned = (planet.population.total as f32 * 0.1) as i32;
+        // Ensure minimum 10% unassigned workers using integer arithmetic
+        let min_unassigned = planet.population.total / 10; // Integer division gives floor
         if allocation.unassigned < min_unassigned {
             return Err(GameError::InvalidOperation(
-                format!("Must maintain at least {}% unassigned workers", 10)
+                format!("Must maintain at least {} unassigned workers (10% of {})", 
+                       min_unassigned, planet.population.total)
             ));
         }
         
@@ -167,17 +235,17 @@ impl PlanetManager {
     
     // Building Management
     pub fn add_building(&mut self, id: PlanetId, building_type: BuildingType) -> GameResult<()> {
-        let index = self.planet_index.get(&id)
-            .ok_or_else(|| GameError::InvalidTarget(format!("Planet {} not found", id)))?;
+        let index = self.get_planet_index(id)?;
         
-        let planet = &mut self.planets[*index];
+        // Calculate slots before getting mutable reference
+        let population = self.planets[index].population.total;
+        let available_slots = self.calculate_building_slots(population);
+        let current_buildings = self.planets[index].developments.len();
         
-        // Calculate available building slots: 10 + population/10000
-        let available_slots = 10 + (planet.population.total / 10000);
-        if planet.developments.len() >= available_slots as usize {
+        if current_buildings >= available_slots {
             return Err(GameError::InvalidOperation(
                 format!("No available building slots. Current: {}, Max: {}", 
-                       planet.developments.len(), available_slots)
+                       current_buildings, available_slots)
             ));
         }
         
@@ -187,44 +255,44 @@ impl PlanetManager {
             operational: true,
         };
         
-        planet.developments.push(building);
+        self.planets[index].developments.push(building);
         Ok(())
     }
     
     pub fn get_building_count(&self, id: PlanetId, building_type: BuildingType) -> GameResult<usize> {
         let planet = self.get_planet(id)?;
-        Ok(planet.developments.iter()
-            .filter(|b| b.building_type == building_type)
-            .count())
+        let mut count = 0;
+        for building in &planet.developments {
+            if building.building_type == building_type {
+                count += 1;
+            }
+        }
+        Ok(count)
     }
     
-    pub fn get_available_building_slots(&self, id: PlanetId) -> GameResult<i32> {
+    pub fn get_available_building_slots(&self, id: PlanetId) -> GameResult<usize> {
         let planet = self.get_planet(id)?;
-        let max_slots = 10 + (planet.population.total / 10000);
-        Ok(max_slots - planet.developments.len() as i32)
+        let max_slots = self.calculate_building_slots(planet.population.total);
+        Ok(max_slots.saturating_sub(planet.developments.len()))
     }
     
     // Planet Control
     pub fn change_controller(&mut self, id: PlanetId, new_controller: Option<FactionId>) -> GameResult<()> {
-        let index = self.planet_index.get(&id)
-            .ok_or_else(|| GameError::InvalidTarget(format!("Planet {} not found", id)))?;
-        
-        self.planets[*index].controller = new_controller;
+        let index = self.get_planet_index(id)?;
+        self.planets[index].controller = new_controller;
         Ok(())
     }
     
     // Storage capacity management
     pub fn upgrade_storage(&mut self, id: PlanetId, additional_capacity: ResourceBundle) -> GameResult<()> {
-        let index = self.planet_index.get(&id)
-            .ok_or_else(|| GameError::InvalidTarget(format!("Planet {} not found", id)))?;
+        // Validate input is non-negative
+        additional_capacity.validate_non_negative()?;
         
-        let planet = &mut self.planets[*index];
-        planet.resources.capacity.minerals += additional_capacity.minerals;
-        planet.resources.capacity.food += additional_capacity.food;
-        planet.resources.capacity.energy += additional_capacity.energy;
-        planet.resources.capacity.alloys += additional_capacity.alloys;
-        planet.resources.capacity.components += additional_capacity.components;
-        planet.resources.capacity.fuel += additional_capacity.fuel;
+        let index = self.get_planet_index(id)?;
+        let planet = &mut self.planets[index];
+        
+        // Use ResourceBundle's add method for safer arithmetic with overflow protection
+        planet.resources.capacity.add(&additional_capacity)?;
         
         Ok(())
     }
@@ -286,8 +354,16 @@ impl GameSystem for PlanetManager {
                     StateChange::PlanetUpdated(planet_id) => {
                         // Validate planet still exists and is in valid state
                         let planet = self.get_planet(*planet_id)?;
-                        planet.resources.current.validate_non_negative()?;
+                        planet.resources.validate()?;
                         planet.population.allocation.validate(planet.population.total)?;
+                        
+                        // Validate building constraints
+                        let max_slots = self.calculate_building_slots(planet.population.total);
+                        if planet.developments.len() > max_slots {
+                            return Err(GameError::InvalidOperation(
+                                format!("Planet {} exceeds building slot limit", planet_id)
+                            ));
+                        }
                     }
                     _ => {} // Ignore other state changes
                 }

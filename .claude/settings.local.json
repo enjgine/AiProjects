@@ -12,7 +12,8 @@
       "task",
       "multiedit",
       "write",
-      "Bash(cargo:*)"
+      "Bash(cargo:*)",
+      "Bash(rustc:*)"
     ],
     "deny": [],
     "ask": []

@@ -1,5 +1,6 @@
 // src/core/types.rs
 use std::fmt;
+use std::ops::{Add, Sub, AddAssign, SubAssign};
 
 // Core type aliases
 pub type GameResult<T> = Result<T, GameError>;
@@ -76,6 +77,73 @@ impl ResourceBundle {
         self.fuel -= cost.fuel;
         Ok(())
     }
+    
+    pub fn add(&mut self, resources: &ResourceBundle) -> GameResult<()> {
+        self.minerals = self.minerals.saturating_add(resources.minerals);
+        self.food = self.food.saturating_add(resources.food);
+        self.energy = self.energy.saturating_add(resources.energy);
+        self.alloys = self.alloys.saturating_add(resources.alloys);
+        self.components = self.components.saturating_add(resources.components);
+        self.fuel = self.fuel.saturating_add(resources.fuel);
+        Ok(())
+    }
+    
+    pub fn total(&self) -> i64 {
+        self.minerals as i64 + self.food as i64 + self.energy as i64 
+        + self.alloys as i64 + self.components as i64 + self.fuel as i64
+    }
+}
+
+impl Add for ResourceBundle {
+    type Output = Self;
+    
+    fn add(self, other: Self) -> Self {
+        Self {
+            minerals: self.minerals + other.minerals,
+            food: self.food + other.food,
+            energy: self.energy + other.energy,
+            alloys: self.alloys + other.alloys,
+            components: self.components + other.components,
+            fuel: self.fuel + other.fuel,
+        }
+    }
+}
+
+impl Sub for ResourceBundle {
+    type Output = Self;
+    
+    fn sub(self, other: Self) -> Self {
+        Self {
+            minerals: self.minerals - other.minerals,
+            food: self.food - other.food,
+            energy: self.energy - other.energy,
+            alloys: self.alloys - other.alloys,
+            components: self.components - other.components,
+            fuel: self.fuel - other.fuel,
+        }
+    }
+}
+
+impl AddAssign for ResourceBundle {
+    fn add_assign(&mut self, other: Self) {
+        self.minerals += other.minerals;
+        self.food += other.food;
+        self.energy += other.energy;
+        self.alloys += other.alloys;
+        self.components += other.components;
+        self.fuel += other.fuel;
+    }
+}
+
+impl SubAssign for ResourceBundle {
+    fn sub_assign(&mut self, other: Self) {
+        self.minerals -= other.minerals;
+        self.food -= other.food;
+        self.energy -= other.energy;
+        self.alloys -= other.alloys;
+        self.components -= other.components;
+        self.fuel -= other.fuel;
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -92,6 +160,34 @@ pub enum ResourceType {
 pub struct ResourceStorage {
     pub current: ResourceBundle,
     pub capacity: ResourceBundle,
+}
+
+impl ResourceStorage {
+    pub fn available_space(&self) -> ResourceBundle {
+        ResourceBundle {
+            minerals: self.capacity.minerals - self.current.minerals,
+            food: self.capacity.food - self.current.food,
+            energy: self.capacity.energy - self.current.energy,
+            alloys: self.capacity.alloys - self.current.alloys,
+            components: self.capacity.components - self.current.components,
+            fuel: self.capacity.fuel - self.current.fuel,
+        }
+    }
+    
+    pub fn can_store(&self, resources: &ResourceBundle) -> bool {
+        let space = self.available_space();
+        space.can_afford(resources)
+    }
+    
+    pub fn validate(&self) -> GameResult<()> {
+        self.current.validate_non_negative()?;
+        self.capacity.validate_non_negative()?;
+        
+        if !self.capacity.can_afford(&self.current) {
+            return Err(GameError::InvalidOperation("Current resources exceed capacity".into()));
+        }
+        Ok(())
+    }
 }
 
 // Population system
@@ -114,6 +210,11 @@ pub struct WorkerAllocation {
 
 impl WorkerAllocation {
     pub fn validate(&self, total: i32) -> GameResult<()> {
+        if self.agriculture < 0 || self.mining < 0 || self.industry < 0 
+           || self.research < 0 || self.military < 0 || self.unassigned < 0 {
+            return Err(GameError::InvalidOperation("Worker allocations cannot be negative".into()));
+        }
+        
         let sum = self.agriculture + self.mining + self.industry 
                 + self.research + self.military + self.unassigned;
         if sum != total {
@@ -147,7 +248,7 @@ pub struct Building {
 }
 
 // Ships
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ShipClass {
     Scout,
     Transport,
@@ -166,6 +267,16 @@ pub struct Ship {
     pub owner: FactionId,
 }
 
+impl Ship {
+    pub fn validate(&self) -> GameResult<()> {
+        if self.fuel < 0.0 {
+            return Err(GameError::InvalidOperation("Ship fuel cannot be negative".into()));
+        }
+        self.cargo.validate()?;
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct CargoHold {
     pub resources: ResourceBundle,
@@ -173,8 +284,36 @@ pub struct CargoHold {
     pub capacity: i32,
 }
 
+impl CargoHold {
+    pub fn current_load(&self) -> i32 {
+        self.resources.total() as i32 + self.population
+    }
+    
+    pub fn available_space(&self) -> i32 {
+        self.capacity - self.current_load()
+    }
+    
+    pub fn can_load(&self, additional_resources: &ResourceBundle, additional_population: i32) -> bool {
+        let additional_load = additional_resources.total() as i32 + additional_population;
+        self.available_space() >= additional_load
+    }
+    
+    pub fn validate(&self) -> GameResult<()> {
+        if self.capacity < 0 {
+            return Err(GameError::InvalidOperation("Cargo capacity cannot be negative".into()));
+        }
+        if self.population < 0 {
+            return Err(GameError::InvalidOperation("Population cannot be negative".into()));
+        }
+        if self.current_load() > self.capacity {
+            return Err(GameError::InvalidOperation("Cargo exceeds capacity".into()));
+        }
+        Ok(())
+    }
+}
+
 // Physics
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Vector2 {
     pub x: f32,
     pub y: f32,
@@ -183,6 +322,35 @@ pub struct Vector2 {
 impl Default for Vector2 {
     fn default() -> Self {
         Self { x: 0.0, y: 0.0 }
+    }
+}
+
+impl Vector2 {
+    pub fn new(x: f32, y: f32) -> Self {
+        Self { x, y }
+    }
+    
+    pub fn distance_to(&self, other: &Vector2) -> f32 {
+        let dx = self.x - other.x;
+        let dy = self.y - other.y;
+        (dx * dx + dy * dy).sqrt()
+    }
+    
+    pub fn magnitude(&self) -> f32 {
+        (self.x * self.x + self.y * self.y).sqrt()
+    }
+    
+    pub fn normalize(&self) -> Vector2 {
+        let mag = self.magnitude();
+        if mag == 0.0 {
+            *self
+        } else {
+            Vector2 { x: self.x / mag, y: self.y / mag }
+        }
+    }
+    
+    pub fn dot(&self, other: &Vector2) -> f32 {
+        self.x * other.x + self.y * other.y
     }
 }
 

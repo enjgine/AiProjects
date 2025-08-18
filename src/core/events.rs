@@ -80,7 +80,7 @@ pub struct EventBus {
     pub subscribers: HashMap<SystemId, Vec<EventType>>,
     pub event_history: VecDeque<GameEvent>,
     history_limit: usize,
-    update_order: Vec<SystemId>,
+    pub update_order: Vec<SystemId>,
 }
 
 impl EventBus {

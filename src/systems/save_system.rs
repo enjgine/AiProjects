@@ -627,7 +627,7 @@ impl SaveSystem {
             tick: game_state.time_manager.get_current_tick(),
             planets: game_state.planet_manager.get_all_planets_cloned()?,
             ships: game_state.ship_manager.get_all_ships_cloned()?,
-            factions: game_state.faction_manager.get_all_factions_cloned()?,
+            factions: game_state.faction_manager.get_all_factions().to_vec(),
             checksum: 0, // Will be calculated after serialization
         };
         

@@ -20,18 +20,43 @@ impl ShipManager {
     }
     
     pub fn create_ship(&mut self, ship_class: ShipClass, position: Vector2, owner: FactionId) -> GameResult<ShipId> {
+        // Input validation
+        if !position.x.is_finite() || !position.y.is_finite() {
+            return Err(GameError::InvalidOperation("Ship position must have finite coordinates".into()));
+        }
+        
+        // Prevent integer overflow on ship IDs
+        if self.next_id == ShipId::MAX {
+            return Err(GameError::SystemError("Maximum number of ships reached".into()));
+        }
+        
         let id = self.next_id;
         self.next_id += 1;
+        
+        // Initialize cargo capacity based on ship class
+        let cargo_capacity = match ship_class {
+            ShipClass::Scout => 0,      // No cargo capacity
+            ShipClass::Transport => 1000, // High cargo capacity
+            ShipClass::Warship => 100,   // Minimal cargo capacity
+            ShipClass::Colony => 500,    // Medium cargo capacity for colonists
+        };
         
         let ship = Ship {
             id,
             ship_class,
             position,
             trajectory: None,
-            cargo: CargoHold::default(),
-            fuel: 100.0, // Default fuel
+            cargo: CargoHold {
+                resources: ResourceBundle::default(),
+                population: 0,
+                capacity: cargo_capacity,
+            },
+            fuel: 100.0, // Default fuel - TODO: Make this i32 for consistency
             owner,
         };
+        
+        // Validate ship before adding
+        ship.validate()?;
         
         self.ships.push(ship);
         self.ship_index.insert(id, self.ships.len() - 1);
@@ -46,10 +71,19 @@ impl ShipManager {
     }
     
     pub fn update_position(&mut self, id: ShipId, position: Vector2) -> GameResult<()> {
+        // Input validation
+        if !position.x.is_finite() || !position.y.is_finite() {
+            return Err(GameError::InvalidOperation("Position must have finite coordinates".into()));
+        }
+        
         let index = self.ship_index.get(&id)
             .ok_or_else(|| GameError::InvalidTarget(format!("Ship {} not found", id)))?;
         
         self.ships[*index].position = position;
+        
+        // Clear trajectory when position is manually updated
+        self.ships[*index].trajectory = None;
+        
         Ok(())
     }
     
@@ -57,24 +91,29 @@ impl ShipManager {
         let index = self.ship_index.remove(&id)
             .ok_or_else(|| GameError::InvalidTarget(format!("Ship {} not found", id)))?;
         
-        self.ships.remove(index);
+        // More efficient: swap_remove to avoid shifting all elements
+        self.ships.swap_remove(index);
         
-        // Rebuild index as positions shifted
-        self.ship_index.clear();
-        for (i, ship) in self.ships.iter().enumerate() {
-            self.ship_index.insert(ship.id, i);
+        // Only need to update the index for the swapped element (if any)
+        if index < self.ships.len() {
+            let swapped_ship = &self.ships[index];
+            self.ship_index.insert(swapped_ship.id, index);
         }
         
         Ok(())
     }
     
-    pub fn get_ship_mut(&mut self, id: ShipId) -> GameResult<&mut Ship> {
+    // Private helper for internal use only - violates architecture if exposed
+    fn get_ship_mut(&mut self, id: ShipId) -> GameResult<&mut Ship> {
         let index = self.ship_index.get(&id)
             .ok_or_else(|| GameError::InvalidTarget(format!("Ship {} not found", id)))?;
         Ok(&mut self.ships[*index])
     }
     
     pub fn load_cargo(&mut self, ship_id: ShipId, resources: ResourceBundle) -> GameResult<()> {
+        // Input validation
+        resources.validate_non_negative()?;
+        
         let ship = self.get_ship_mut(ship_id)?;
         
         // Check if ship can carry resources (only transport ships for now)
@@ -82,26 +121,25 @@ impl ShipManager {
             return Err(GameError::InvalidOperation("Only transport ships can carry cargo".into()));
         }
         
-        // Calculate current cargo weight (simplified: assume each resource unit = 1 weight)
-        let current_weight = ship.cargo.resources.minerals + ship.cargo.resources.food +
-                            ship.cargo.resources.energy + ship.cargo.resources.alloys +
-                            ship.cargo.resources.components + ship.cargo.resources.fuel +
-                            ship.cargo.population;
-        
-        let additional_weight = resources.minerals + resources.food + resources.energy +
-                               resources.alloys + resources.components + resources.fuel;
-        
-        if current_weight + additional_weight > ship.cargo.capacity {
-            return Err(GameError::InvalidOperation("Cargo capacity exceeded".into()));
+        // Use proper CargoHold validation methods
+        if !ship.cargo.can_load(&resources, 0) {
+            return Err(GameError::InsufficientResources {
+                required: ResourceBundle {
+                    minerals: ship.cargo.available_space().max(resources.total() as i32),
+                    ..Default::default()
+                },
+                available: ResourceBundle {
+                    minerals: ship.cargo.available_space(),
+                    ..Default::default()
+                },
+            });
         }
         
-        // Load the resources
-        ship.cargo.resources.minerals += resources.minerals;
-        ship.cargo.resources.food += resources.food;
-        ship.cargo.resources.energy += resources.energy;
-        ship.cargo.resources.alloys += resources.alloys;
-        ship.cargo.resources.components += resources.components;
-        ship.cargo.resources.fuel += resources.fuel;
+        // Load the resources using safer addition
+        ship.cargo.resources.add(&resources)?;
+        
+        // Validate cargo state after loading
+        ship.cargo.validate()?;
         
         Ok(())
     }
@@ -126,38 +164,88 @@ impl ShipManager {
     }
     
     pub fn set_trajectory(&mut self, ship_id: ShipId, trajectory: Trajectory) -> GameResult<()> {
+        // Input validation
+        if !trajectory.origin.x.is_finite() || !trajectory.origin.y.is_finite() ||
+           !trajectory.destination.x.is_finite() || !trajectory.destination.y.is_finite() {
+            return Err(GameError::InvalidOperation("Trajectory coordinates must be finite".into()));
+        }
+        if trajectory.fuel_cost < 0.0 || !trajectory.fuel_cost.is_finite() {
+            return Err(GameError::InvalidOperation("Fuel cost must be positive and finite".into()));
+        }
+        if trajectory.departure_time > trajectory.arrival_time {
+            return Err(GameError::InvalidOperation("Departure time cannot be after arrival time".into()));
+        }
+        
         let ship = self.get_ship_mut(ship_id)?;
+        
+        // Validate ship has sufficient fuel for trajectory
+        if ship.fuel < trajectory.fuel_cost {
+            return Err(GameError::InsufficientResources {
+                required: ResourceBundle { fuel: trajectory.fuel_cost as i32, ..Default::default() },
+                available: ResourceBundle { fuel: ship.fuel as i32, ..Default::default() },
+            });
+        }
+        
         ship.trajectory = Some(trajectory);
         Ok(())
     }
     
     pub fn consume_fuel(&mut self, ship_id: ShipId, amount: f32) -> GameResult<()> {
+        // Input validation
+        if amount < 0.0 || !amount.is_finite() {
+            return Err(GameError::InvalidOperation("Fuel amount must be positive and finite".into()));
+        }
+        
         let ship = self.get_ship_mut(ship_id)?;
         
         if ship.fuel < amount {
-            return Err(GameError::InvalidOperation("Insufficient fuel".into()));
+            return Err(GameError::InsufficientResources {
+                required: ResourceBundle { fuel: amount as i32, ..Default::default() },
+                available: ResourceBundle { fuel: ship.fuel as i32, ..Default::default() },
+            });
         }
         
         ship.fuel -= amount;
+        
+        // Validate ship state after fuel consumption
+        ship.validate()?;
+        
         Ok(())
     }
     
-    pub fn get_ships_at_planet(&self, planet_position: Vector2, radius: f32) -> Vec<ShipId> {
-        self.ships.iter()
+    pub fn get_ships_at_planet(&self, planet_position: Vector2, radius: f32) -> GameResult<Vec<ShipId>> {
+        // Input validation
+        if !planet_position.x.is_finite() || !planet_position.y.is_finite() {
+            return Err(GameError::InvalidOperation("Planet position must have finite coordinates".into()));
+        }
+        if radius < 0.0 || !radius.is_finite() {
+            return Err(GameError::InvalidOperation("Radius must be positive and finite".into()));
+        }
+        
+        // Use more efficient distance calculation (avoid sqrt when possible)
+        let radius_squared = radius * radius;
+        let ships = self.ships.iter()
             .filter(|ship| {
-                let distance = ((ship.position.x - planet_position.x).powi(2) + 
-                               (ship.position.y - planet_position.y).powi(2)).sqrt();
-                distance <= radius
+                let dx = ship.position.x - planet_position.x;
+                let dy = ship.position.y - planet_position.y;
+                dx * dx + dy * dy <= radius_squared
             })
             .map(|ship| ship.id)
-            .collect()
+            .collect();
+        
+        Ok(ships)
     }
     
+    // Returns immutable reference to ships - read-only access
     pub fn get_all_ships(&self) -> &Vec<Ship> {
         &self.ships
     }
     
     pub fn get_all_ships_cloned(&self) -> GameResult<Vec<Ship>> {
+        // Validate all ships before returning cloned data
+        for ship in &self.ships {
+            ship.validate()?;
+        }
         Ok(self.ships.clone())
     }
     
@@ -180,7 +268,7 @@ impl ShipManager {
             }
             GameEvent::SimulationEvent(sim_event) => {
                 match sim_event {
-                    SimulationEvent::ShipCompleted { planet: _, ship } => {
+                    SimulationEvent::ShipCompleted { planet: _, ship: _ } => {
                         // Ship already created by ConstructionSystem, just mark as completed
                         Ok(())
                     }
@@ -195,69 +283,96 @@ impl ShipManager {
     }
     
     fn handle_move_ship(&mut self, ship_id: ShipId, target: Vector2) -> GameResult<()> {
-        let ship = self.get_ship_mut(ship_id)?;
+        // Input validation
+        if !target.x.is_finite() || !target.y.is_finite() {
+            return Err(GameError::InvalidOperation("Target position must have finite coordinates".into()));
+        }
         
-        // Calculate fuel cost: Speed × Distance / 100
-        let distance = ((target.x - ship.position.x).powi(2) + 
-                       (target.y - ship.position.y).powi(2)).sqrt();
-        
-        // Base fuel consumption (can be modified by ship class)
-        let fuel_cost = match ship.ship_class {
-            ShipClass::Scout => distance / 200.0,      // More efficient
-            ShipClass::Transport => distance / 100.0,  // Standard
-            ShipClass::Warship => distance / 80.0,     // Less efficient
-            ShipClass::Colony => distance / 60.0,      // Least efficient
+        // Get ship data without holding mutable reference
+        let (ship_position, ship_class, ship_fuel) = {
+            let ship = self.get_ship_mut(ship_id)?;
+            (ship.position, ship.ship_class, ship.fuel)
         };
         
+        // Use Vector2 distance method for consistency
+        let distance = ship_position.distance_to(&target);
+        
+        // Prevent movement to same position
+        if distance < 0.1 {
+            return Ok(()); // Already at destination
+        }
+        
+        // Calculate fuel cost based on ship class efficiency
+        let fuel_cost = self.calculate_fuel_cost_for_class(ship_class, distance);
+        
         // Validate fuel availability
-        if ship.fuel < fuel_cost {
+        if ship_fuel < fuel_cost {
             return Err(GameError::InsufficientResources {
                 required: ResourceBundle { fuel: fuel_cost as i32, ..Default::default() },
-                available: ResourceBundle { fuel: ship.fuel as i32, ..Default::default() },
+                available: ResourceBundle { fuel: ship_fuel as i32, ..Default::default() },
             });
         }
         
-        // Create trajectory
+        // Create trajectory with proper validation
         let trajectory = Trajectory {
-            origin: ship.position,
+            origin: ship_position,
             destination: target,
             departure_time: 0, // Will be set by PhysicsEngine
             arrival_time: 0,   // Will be calculated by PhysicsEngine
             fuel_cost,
         };
         
+        // Now get mutable reference to set trajectory
+        let ship = self.get_ship_mut(ship_id)?;
         ship.trajectory = Some(trajectory);
         Ok(())
     }
     
+    // Helper method to centralize fuel cost calculation
+    fn calculate_fuel_cost_for_class(&self, ship_class: ShipClass, distance: f32) -> f32 {
+        match ship_class {
+            ShipClass::Scout => distance / 200.0,      // More efficient
+            ShipClass::Transport => distance / 100.0,  // Standard
+            ShipClass::Warship => distance / 80.0,     // Less efficient
+            ShipClass::Colony => distance / 60.0,      // Least efficient
+        }
+    }
+    
     fn handle_combat_resolved(&mut self, outcome: &CombatOutcome) -> GameResult<()> {
-        // Remove destroyed ships
+        let mut errors = Vec::new();
+        
+        // Remove destroyed ships and track errors for proper reporting
         for &ship_id in &outcome.attacker_losses {
-            if let Err(_) = self.destroy_ship(ship_id) {
-                // Ship might already be destroyed, continue
+            if let Err(e) = self.destroy_ship(ship_id) {
+                errors.push(format!("Failed to destroy attacker ship {}: {}", ship_id, e));
             }
         }
         
         for &ship_id in &outcome.defender_losses {
-            if let Err(_) = self.destroy_ship(ship_id) {
-                // Ship might already be destroyed, continue
+            if let Err(e) = self.destroy_ship(ship_id) {
+                errors.push(format!("Failed to destroy defender ship {}: {}", ship_id, e));
             }
+        }
+        
+        // Report errors if any occurred during combat resolution
+        if !errors.is_empty() {
+            return Err(GameError::SystemError(
+                format!("Combat resolution errors: {}", errors.join("; "))
+            ));
         }
         
         Ok(())
     }
     
     pub fn calculate_fuel_cost(&self, ship_id: ShipId, distance: f32) -> GameResult<f32> {
+        // Input validation
+        if distance < 0.0 || !distance.is_finite() {
+            return Err(GameError::InvalidOperation("Distance must be positive and finite".into()));
+        }
+        
         let ship = self.get_ship(ship_id)?;
         
-        let fuel_cost = match ship.ship_class {
-            ShipClass::Scout => distance / 200.0,
-            ShipClass::Transport => distance / 100.0,
-            ShipClass::Warship => distance / 80.0,
-            ShipClass::Colony => distance / 60.0,
-        };
-        
-        Ok(fuel_cost)
+        Ok(self.calculate_fuel_cost_for_class(ship.ship_class, distance))
     }
     
     pub fn get_ships_by_owner(&self, owner: FactionId) -> Vec<ShipId> {
@@ -275,7 +390,30 @@ impl ShipManager {
     }
     
     pub fn load_ships(&mut self, ships: Vec<Ship>) -> GameResult<()> {
-        // Replace all ships with loaded data
+        // Validate all ships before loading
+        for ship in &ships {
+            ship.validate()?;
+            
+            // Validate position coordinates
+            if !ship.position.x.is_finite() || !ship.position.y.is_finite() {
+                return Err(GameError::InvalidOperation(
+                    format!("Ship {} has invalid position coordinates", ship.id)
+                ));
+            }
+        }
+        
+        // Check for duplicate ship IDs using Vec-based approach
+        let mut ship_ids: Vec<ShipId> = ships.iter().map(|s| s.id).collect();
+        ship_ids.sort_unstable();
+        for window in ship_ids.windows(2) {
+            if window[0] == window[1] {
+                return Err(GameError::InvalidOperation(
+                    format!("Duplicate ship ID {} found", window[0])
+                ));
+            }
+        }
+        
+        // Replace all ships with validated data
         self.ships = ships;
         
         // Rebuild the index
@@ -284,11 +422,12 @@ impl ShipManager {
             self.ship_index.insert(ship.id, index);
         }
         
-        // Update next_id to be higher than any existing ID
+        // Update next_id to prevent conflicts
         self.next_id = self.ships.iter()
             .map(|s| s.id)
             .max()
-            .unwrap_or(0) + 1;
+            .map(|max_id| max_id.saturating_add(1))
+            .unwrap_or(0);
             
         Ok(())
     }
@@ -351,11 +490,7 @@ mod tests {
         let transport_id = manager.create_ship(ShipClass::Transport, Vector2 { x: 0.0, y: 0.0 }, 1).unwrap();
         let scout_id = manager.create_ship(ShipClass::Scout, Vector2 { x: 0.0, y: 0.0 }, 1).unwrap();
         
-        // Set transport capacity
-        {
-            let transport = manager.get_ship_mut(transport_id).unwrap();
-            transport.cargo.capacity = 100;
-        }
+        // Transport already has proper capacity from create_ship
         
         let resources = ResourceBundle {
             minerals: 50,
