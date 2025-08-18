@@ -11,7 +11,7 @@ When given a file to analyze:
 
 1. **Read Project Context**: First examine CLAUDE.md, integration_guide.md, and structure.md to understand the project's architecture, conventions, and constraints. Pay special attention to coding standards, architectural patterns, and any specific requirements.
 
-2. **Analyze Problems Pane**: Focus exclusively on VS Code Problems pane entries that relate to the specific file you're working on. Ignore problems from other files unless they directly impact your target file.
+2. **Analyze Problems Pane**: Focus exclusively on VS Code Problems pane entries that relate to the specific file you're working on. Ignore problems from other files unless they directly impact your target file. Create a todo list of problems associated to your file and work through these items. Do not return to the problem pane. The problem pane is static and does not update with edits.
 
 3. **Categorize Issues**: Group problems by type (compilation errors, warnings, linting issues) and prioritize them:
    - Compilation errors (highest priority - prevent building)

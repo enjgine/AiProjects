@@ -29,6 +29,8 @@ pub struct InputHandler {
     last_input_time: Instant,
     /// Minimum time between input events to prevent spam
     input_cooldown: Duration,
+    /// Last left click time for double-click detection
+    last_left_click_time: Instant,
 }
 
 #[derive(Debug, Clone)]
@@ -43,7 +45,7 @@ impl KeyState {
         Self {
             pressed: false,
             last_press_time: Instant::now(),
-            debounce_duration: Duration::from_millis(100), // 100ms debounce
+            debounce_duration: Duration::from_millis(KEY_DEBOUNCE_MS),
         }
     }
     
@@ -52,29 +54,40 @@ impl KeyState {
     }
 }
 
+// Camera and zoom constraints
 const MIN_ZOOM: f32 = 0.1;
 const MAX_ZOOM: f32 = 10.0;
 const ZOOM_SENSITIVITY: f32 = 0.1;
 const CAMERA_DRAG_SENSITIVITY: f32 = 1.0;
-const SELECTION_TOLERANCE: f32 = 20.0; // pixels
-const INPUT_RATE_LIMIT_MS: u64 = 16; // ~60 FPS max input rate
 const MAX_CAMERA_BOUND: f32 = 10000.0;
+
+// Selection and interaction
+const SELECTION_TOLERANCE: f32 = 25.0; // pixels - slightly larger for better UX
+const DOUBLE_CLICK_TIME_MS: u64 = 300; // milliseconds for double-click detection
+
+// Performance controls
+const INPUT_RATE_LIMIT_MS: u64 = 16; // ~60 FPS max input rate
+const KEY_DEBOUNCE_MS: u64 = 100; // debounce time for key presses
+
+// Game speed limits
 const MIN_GAME_SPEED: f32 = 0.1;
 const MAX_GAME_SPEED: f32 = 8.0;
 
 impl InputHandler {
     pub fn new() -> Self {
+        let now = Instant::now();
         Self {
             last_mouse_pos: (0.0, 0.0),
             mouse_drag_start: None,
-            key_states: HashMap::new(),
+            key_states: HashMap::with_capacity(16), // Pre-allocate for better performance
             selected_planet: None,
             selected_ship: None,
             camera_position: Vector2::new(0.0, 0.0),
             zoom_level: 1.0,
             is_paused: false,
-            last_input_time: Instant::now(),
+            last_input_time: now,
             input_cooldown: Duration::from_millis(INPUT_RATE_LIMIT_MS),
+            last_left_click_time: now,
         }
     }
     
@@ -84,6 +97,9 @@ impl InputHandler {
         self.selected_ship = None;
         self.key_states.clear();
         self.mouse_drag_start = None;
+        let now = Instant::now();
+        self.last_input_time = now;
+        self.last_left_click_time = now;
     }
     
     /// Get current camera position for rendering
@@ -121,26 +137,27 @@ impl InputHandler {
         Ok(())
     }
     
-    /// Update key state tracking for debouncing
+    /// Update key state tracking for debouncing - only processes changed keys
     fn update_key_states(&mut self) {
         let now = Instant::now();
         
-        // Update key states for important keys
-        let keys_to_track = [
+        // Static keys we need to track for debouncing
+        const TRACKED_KEYS: &[KeyCode] = &[
             KeyCode::Space, KeyCode::Key1, KeyCode::Key2, KeyCode::Key3, KeyCode::Key4,
-            KeyCode::Escape, KeyCode::Delete, KeyCode::F1, KeyCode::F2, KeyCode::F3,
-            KeyCode::A, KeyCode::D, KeyCode::S, KeyCode::W,
+            KeyCode::Escape, KeyCode::Delete, KeyCode::S, KeyCode::L,
         ];
         
-        for &key in &keys_to_track {
-            let is_pressed = is_key_down(key);
+        for &key in TRACKED_KEYS {
+            let is_currently_pressed = is_key_down(key);
             let key_state = self.key_states.entry(key).or_insert_with(KeyState::new);
             
-            // Only update last_press_time on fresh key press
-            if is_pressed && !key_state.pressed {
-                key_state.last_press_time = now;
+            // Only update on state change to reduce unnecessary work
+            if is_currently_pressed != key_state.pressed {
+                if is_currently_pressed {
+                    key_state.last_press_time = now;
+                }
+                key_state.pressed = is_currently_pressed;
             }
-            key_state.pressed = is_pressed;
         }
     }
     
@@ -236,11 +253,9 @@ impl InputHandler {
     
     /// Check if a key was just pressed (debounced)
     fn is_key_just_pressed(&self, key: KeyCode) -> bool {
-        // Use macroquad's built-in key press detection with our debouncing
         if let Some(key_state) = self.key_states.get(&key) {
-            // Key must be currently pressed and passed debounce time
-            key_state.pressed && is_key_pressed(key) && 
-            key_state.is_just_pressed(Instant::now())
+            // Use our debounced state tracking for tracked keys
+            key_state.is_just_pressed(Instant::now()) && is_key_pressed(key)
         } else {
             // Fallback to direct macroquad detection for untracked keys
             is_key_pressed(key)
@@ -269,24 +284,44 @@ impl InputHandler {
     
     fn handle_left_click(&mut self, x: f32, y: f32, events: &mut EventBus) -> GameResult<()> {
         let world_pos = self.screen_to_world(x, y)?;
+        let now = Instant::now();
+        
+        // Detect double-click for future features (e.g., follow ship, focus planet)
+        let is_double_click = now.duration_since(self.last_left_click_time) 
+            < Duration::from_millis(DOUBLE_CLICK_TIME_MS);
+        self.last_left_click_time = now;
         
         // Check for ship selection first (ships have priority over planets)
         if let Some(ship_id) = self.find_ship_at_position(world_pos) {
+            let was_already_selected = self.selected_ship == Some(ship_id);
             self.selected_ship = Some(ship_id);
             self.selected_planet = None; // Clear planet selection
+            
             events.queue_event(GameEvent::PlayerCommand(
                 PlayerCommand::SelectShip(ship_id)
             ));
+            
+            // TODO: Add double-click ship behavior (e.g., follow ship)
+            if is_double_click && was_already_selected {
+                // Future: implement follow ship camera or ship details
+            }
             return Ok(());
         }
         
         // Check for planet selection
         if let Some(planet_id) = self.find_planet_at_position(world_pos) {
+            let was_already_selected = self.selected_planet == Some(planet_id);
             self.selected_planet = Some(planet_id);
             self.selected_ship = None; // Clear ship selection
+            
             events.queue_event(GameEvent::PlayerCommand(
                 PlayerCommand::SelectPlanet(planet_id)
             ));
+            
+            // TODO: Add double-click planet behavior (e.g., open planet details)
+            if is_double_click && was_already_selected {
+                // Future: implement planet details panel or camera focus
+            }
             return Ok(());
         }
         
@@ -404,6 +439,9 @@ impl InputHandler {
     fn find_ship_at_position(&self, world_pos: Vector2) -> Option<ShipId> {
         // Validate input position
         if !world_pos.x.is_finite() || !world_pos.y.is_finite() {
+            // Log invalid position for debugging when managers are integrated
+            #[cfg(debug_assertions)]
+            eprintln!("Warning: Invalid world position for ship selection: {:?}", world_pos);
             return None;
         }
         
@@ -411,7 +449,8 @@ impl InputHandler {
         // The implementation should:
         // 1. Query ship manager for ships within SELECTION_TOLERANCE of world_pos
         // 2. Return the closest ship ID within tolerance, prioritizing player-owned ships
-        // 3. Use efficient spatial indexing for large numbers of ships
+        // 3. Use efficient spatial indexing (quadtree/spatial hash) for large numbers of ships
+        // 4. Handle orbital mechanics for ships in orbit around planets
         None
     }
     
@@ -420,14 +459,18 @@ impl InputHandler {
     fn find_planet_at_position(&self, world_pos: Vector2) -> Option<PlanetId> {
         // Validate input position
         if !world_pos.x.is_finite() || !world_pos.y.is_finite() {
+            // Log invalid position for debugging when managers are integrated
+            #[cfg(debug_assertions)]
+            eprintln!("Warning: Invalid world position for planet selection: {:?}", world_pos);
             return None;
         }
         
         // TODO: This requires integration with planet manager to query planet positions
         // The implementation should:
         // 1. Query planet manager for planets within SELECTION_TOLERANCE of world_pos
-        // 2. Calculate orbital positions based on current game tick
-        // 3. Return the closest planet ID within tolerance
+        // 2. Calculate orbital positions based on current game tick from TimeManager
+        // 3. Return the closest planet ID within tolerance, considering planet radii
+        // 4. Cache position calculations to avoid redundant orbital math
         None
     }
     
@@ -455,6 +498,22 @@ impl InputHandler {
     /// Update game pause state (called when pause state changes externally)
     pub fn set_pause_state(&mut self, is_paused: bool) {
         self.is_paused = is_paused;
+    }
+    
+    /// Set selection programmatically with validation
+    pub fn set_selected_planet(&mut self, planet_id: Option<PlanetId>) {
+        self.selected_planet = planet_id;
+        if planet_id.is_some() {
+            self.selected_ship = None; // Clear ship selection when planet selected
+        }
+    }
+    
+    /// Set ship selection programmatically with validation  
+    pub fn set_selected_ship(&mut self, ship_id: Option<ShipId>) {
+        self.selected_ship = ship_id;
+        if ship_id.is_some() {
+            self.selected_planet = None; // Clear planet selection when ship selected
+        }
     }
     
     /// Get current pause state

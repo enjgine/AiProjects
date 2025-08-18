@@ -1,4 +1,14 @@
 // src/ui/panels/ship_panel.rs
+//! Ship information panel for the Stellar Dominion UI system.
+//! 
+//! This panel displays comprehensive ship information including:
+//! - Ship status (position, fuel, movement state)
+//! - Cargo details with visual capacity indicators
+//! - Interactive action buttons (move, cargo management, recall)
+//! 
+//! All interactions follow the EventBus architecture, emitting only PlayerCommand events.
+//! The panel caches mouse position per frame for performance optimization.
+
 use crate::core::{GameResult, GameError, GameEvent, EventBus};
 use crate::core::types::*;
 use crate::core::events::{PlayerCommand};
@@ -11,6 +21,8 @@ pub struct ShipPanel {
     selected_ship_id: Option<ShipId>,
     scroll_offset: f32,
     button_states: ButtonStates,
+    /// Cached mouse position to avoid multiple queries per frame
+    cached_mouse_pos: Option<(f32, f32)>,
 }
 
 #[derive(Default)]
@@ -28,6 +40,7 @@ impl ShipPanel {
             selected_ship_id: None,
             scroll_offset: 0.0,
             button_states: ButtonStates::default(),
+            cached_mouse_pos: None,
         }
     }
     
@@ -38,8 +51,11 @@ impl ShipPanel {
         
         // Validate ship data if provided
         if let Some(ship) = ship {
-            ship.validate().map_err(|e| GameError::SystemError(format!("Invalid ship data: {}", e)))?;
+            ship.validate()?; // Ship validation already returns GameError
         }
+        
+        // Cache mouse position for this frame to avoid multiple queries
+        self.cached_mouse_pos = Some(mouse_position());
         
         // Draw panel background with subtle gradient effect
         self.draw_panel_background();
@@ -52,7 +68,7 @@ impl ShipPanel {
                 y_position = self.render_ship_header(ship, y_position)?;
                 y_position = self.render_ship_status(ship, y_position)?;
                 y_position = self.render_cargo_info(ship, y_position)?;
-                y_position = self.render_ship_actions(ship, y_position, events)?;
+                let _y_position = self.render_ship_actions(ship, y_position, events)?;
                 
                 // Handle user interactions
                 self.handle_input(ship, events)?;
@@ -76,6 +92,7 @@ impl ShipPanel {
         self.selected_ship_id = None;
         self.scroll_offset = 0.0;
         self.button_states = ButtonStates::default();
+        self.cached_mouse_pos = None;
     }
     
     pub fn is_visible(&self) -> bool {
@@ -177,11 +194,13 @@ impl ShipPanel {
         // Movement status with trajectory info
         let (status_text, status_color) = match &ship.trajectory {
             Some(trajectory) => {
-                let eta = if trajectory.arrival_time > trajectory.departure_time {
-                    trajectory.arrival_time - trajectory.departure_time
-                } else {
-                    0
-                };
+                // Validate trajectory times to catch data corruption
+                if trajectory.arrival_time < trajectory.departure_time {
+                    return Err(GameError::SystemError(
+                        "Invalid trajectory: arrival time before departure".to_string()
+                    ));
+                }
+                let eta = trajectory.arrival_time - trajectory.departure_time;
                 (format!("Moving (ETA: {} ticks)", eta), Color::new(0.5, 1.0, 0.5, 1.0))
             },
             None => ("Stationary".to_string(), Color::new(0.8, 0.8, 0.8, 1.0)),
@@ -258,13 +277,18 @@ impl ShipPanel {
         let bar_height = 8.0;
         let bar_x = self.panel_rect.x + 15.0;
         
-        // Background bar
-        draw_rectangle(bar_x, y_offset, bar_width, bar_height, Color::new(0.3, 0.3, 0.3, 1.0));
-        
-        // Filled portion
-        if capacity > 0 {
-            let filled_width = bar_width * (current_load as f32 / capacity as f32).min(1.0);
-            draw_rectangle(bar_x, y_offset, filled_width, bar_height, capacity_color);
+        // Validate bar dimensions to prevent rendering errors
+        if bar_width > 0.0 && bar_height > 0.0 {
+            // Background bar
+            draw_rectangle(bar_x, y_offset, bar_width, bar_height, Color::new(0.3, 0.3, 0.3, 1.0));
+            
+            // Filled portion
+            if capacity > 0 {
+                let filled_width = bar_width * (current_load as f32 / capacity as f32).min(1.0);
+                if filled_width > 0.0 {
+                    draw_rectangle(bar_x, y_offset, filled_width, bar_height, capacity_color);
+                }
+            }
         }
         
         y_offset += 25.0;
@@ -281,38 +305,62 @@ impl ShipPanel {
             y_offset += 18.0;
         }
         
-        // Resources breakdown
+        // Resources breakdown - optimized to avoid allocation when no resources
         let resources = &ship.cargo.resources;
-        if resources.minerals + resources.food + resources.alloys + resources.components + resources.fuel > 0 {
+        let has_resources = resources.minerals > 0 || resources.food > 0 || resources.alloys > 0 
+                           || resources.components > 0 || resources.fuel > 0;
+        
+        if has_resources {
             draw_text("Resources:", self.panel_rect.x + 15.0, y_offset, 14.0, Color::new(0.9, 0.9, 1.0, 1.0));
             y_offset += 18.0;
             
-            let resource_items = [
-                ("Minerals", resources.minerals, Color::new(0.8, 0.6, 0.4, 1.0)),
-                ("Food", resources.food, Color::new(0.6, 0.8, 0.4, 1.0)),
-                ("Alloys", resources.alloys, Color::new(0.6, 0.6, 0.8, 1.0)),
-                ("Components", resources.components, Color::new(0.8, 0.4, 0.8, 1.0)),
-                ("Fuel", resources.fuel, Color::new(0.8, 0.8, 0.4, 1.0)),
-            ];
-            
-            for (name, amount, color) in resource_items.iter() {
-                if *amount > 0 {
-                    draw_text(
-                        &format!("  {}: {}", name, amount),
-                        self.panel_rect.x + 20.0,
-                        y_offset,
-                        12.0,
-                        *color,
-                    );
-                    y_offset += 16.0;
-                }
+            // Only process resources that exist to improve performance
+            if resources.minerals > 0 {
+                draw_text(
+                    &format!("  Minerals: {}", resources.minerals),
+                    self.panel_rect.x + 20.0, y_offset, 12.0,
+                    Color::new(0.8, 0.6, 0.4, 1.0)
+                );
+                y_offset += 16.0;
+            }
+            if resources.food > 0 {
+                draw_text(
+                    &format!("  Food: {}", resources.food),
+                    self.panel_rect.x + 20.0, y_offset, 12.0,
+                    Color::new(0.6, 0.8, 0.4, 1.0)
+                );
+                y_offset += 16.0;
+            }
+            if resources.alloys > 0 {
+                draw_text(
+                    &format!("  Alloys: {}", resources.alloys),
+                    self.panel_rect.x + 20.0, y_offset, 12.0,
+                    Color::new(0.6, 0.6, 0.8, 1.0)
+                );
+                y_offset += 16.0;
+            }
+            if resources.components > 0 {
+                draw_text(
+                    &format!("  Components: {}", resources.components),
+                    self.panel_rect.x + 20.0, y_offset, 12.0,
+                    Color::new(0.8, 0.4, 0.8, 1.0)
+                );
+                y_offset += 16.0;
+            }
+            if resources.fuel > 0 {
+                draw_text(
+                    &format!("  Fuel: {}", resources.fuel),
+                    self.panel_rect.x + 20.0, y_offset, 12.0,
+                    Color::new(0.8, 0.8, 0.4, 1.0)
+                );
+                y_offset += 16.0;
             }
         }
         
         Ok(y_offset + 10.0)
     }
     
-    fn render_ship_actions(&mut self, ship: &Ship, y_start: f32, events: &mut EventBus) -> GameResult<f32> {
+    fn render_ship_actions(&mut self, ship: &Ship, y_start: f32, _events: &mut EventBus) -> GameResult<f32> {
         let mut y_offset = y_start;
         
         // Section header
@@ -361,37 +409,41 @@ impl ShipPanel {
             WHITE,
         );
         
-        // Cargo actions button
-        let cargo_button_rect = Rect::new(
-            self.panel_rect.x + 15.0 + button_width + button_spacing,
-            y_offset,
-            button_width,
-            button_height,
-        );
-        self.button_states.cargo_button_rect = Some(cargo_button_rect);
-        
-        draw_rectangle(
-            cargo_button_rect.x,
-            cargo_button_rect.y,
-            cargo_button_rect.w,
-            cargo_button_rect.h,
-            Color::new(0.4, 0.4, 0.6, 1.0),
-        );
-        draw_rectangle_lines(
-            cargo_button_rect.x,
-            cargo_button_rect.y,
-            cargo_button_rect.w,
-            cargo_button_rect.h,
-            1.0,
-            WHITE,
-        );
-        draw_text(
-            "Cargo",
-            cargo_button_rect.x + 20.0,
-            cargo_button_rect.y + 16.0,
-            14.0,
-            WHITE,
-        );
+        // Cargo actions button (only if ship has cargo capacity)
+        if ship.cargo.capacity > 0 {
+            let cargo_button_rect = Rect::new(
+                self.panel_rect.x + 15.0 + button_width + button_spacing,
+                y_offset,
+                button_width,
+                button_height,
+            );
+            self.button_states.cargo_button_rect = Some(cargo_button_rect);
+            
+            draw_rectangle(
+                cargo_button_rect.x,
+                cargo_button_rect.y,
+                cargo_button_rect.w,
+                cargo_button_rect.h,
+                Color::new(0.4, 0.4, 0.6, 1.0),
+            );
+            draw_rectangle_lines(
+                cargo_button_rect.x,
+                cargo_button_rect.y,
+                cargo_button_rect.w,
+                cargo_button_rect.h,
+                1.0,
+                WHITE,
+            );
+            draw_text(
+                "Cargo",
+                cargo_button_rect.x + 20.0,
+                cargo_button_rect.y + 16.0,
+                14.0,
+                WHITE,
+            );
+        } else {
+            self.button_states.cargo_button_rect = None;
+        }
         
         y_offset += button_height + button_spacing;
         
@@ -462,41 +514,50 @@ impl ShipPanel {
             return Ok(());
         }
         
-        let mouse_pos = mouse_position();
+        // Use cached mouse position to avoid multiple queries
+        let mouse_pos = self.cached_mouse_pos.ok_or_else(|| 
+            GameError::SystemError("Mouse position not cached".to_string())
+        )?;
         let mouse_point = macroquad::math::Vec2::new(mouse_pos.0, mouse_pos.1);
         
         // Check move button
         if let Some(rect) = &self.button_states.move_button_rect {
             if self.point_in_rect(mouse_point, rect) {
-                // For now, just emit a generic move command - UI should handle destination selection
-                events.queue_event(GameEvent::PlayerCommand(
-                    PlayerCommand::MoveShip { 
-                        ship: ship.id, 
-                        target: Vector2::new(mouse_pos.0, mouse_pos.1) // Placeholder - should use proper destination
-                    }
+                // TODO: Implement proper destination selection UI
+                // For now, emit event to indicate move command requested
+                // The UI renderer should handle destination selection
+                return Err(GameError::InvalidOperation(
+                    "Move destination selection not implemented".to_string()
                 ));
             }
         }
         
-        // Check cargo button
+        // Check cargo button (only if cargo functionality is available)
         if let Some(rect) = &self.button_states.cargo_button_rect {
             if self.point_in_rect(mouse_point, rect) {
-                // Cargo management would need a separate dialog/panel
-                // For now, just log the action intent
-                // This could emit an event to open a cargo management panel
+                // TODO: Implement cargo management panel
+                return Err(GameError::InvalidOperation(
+                    "Cargo management not implemented".to_string()
+                ));
             }
         }
         
-        // Check recall button
+        // Check recall button - return ship to origin
         if let Some(rect) = &self.button_states.recall_button_rect {
             if self.point_in_rect(mouse_point, rect) {
-                // Recall ship by setting target to current position
-                events.queue_event(GameEvent::PlayerCommand(
-                    PlayerCommand::MoveShip { 
-                        ship: ship.id, 
-                        target: ship.position 
-                    }
-                ));
+                if let Some(trajectory) = &ship.trajectory {
+                    // Recall ship to its origin position
+                    events.queue_event(GameEvent::PlayerCommand(
+                        PlayerCommand::MoveShip { 
+                            ship: ship.id, 
+                            target: trajectory.origin
+                        }
+                    ));
+                } else {
+                    return Err(GameError::InvalidOperation(
+                        "Cannot recall ship without trajectory".to_string()
+                    ));
+                }
             }
         }
         
@@ -506,5 +567,24 @@ impl ShipPanel {
     fn point_in_rect(&self, point: macroquad::math::Vec2, rect: &Rect) -> bool {
         point.x >= rect.x && point.x <= rect.x + rect.w &&
         point.y >= rect.y && point.y <= rect.y + rect.h
+    }
+}
+
+// Implementation of Panel trait for architectural compliance
+impl Panel for ShipPanel {
+    fn new() -> Self {
+        Self::new()
+    }
+    
+    fn show(&mut self) {
+        self.visible = true;
+    }
+    
+    fn hide(&mut self) {
+        Self::hide(self);
+    }
+    
+    fn is_visible(&self) -> bool {
+        self.visible
     }
 }
