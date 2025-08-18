@@ -96,38 +96,19 @@ impl ResourceSystem {
         Ok(total_production)
     }
     
-    pub fn process_production(&mut self, planet_manager: &mut crate::managers::PlanetManager, event_bus: &mut EventBus) -> GameResult<()> {
-        let all_planets = planet_manager.get_all_planets().clone();
-        
-        for planet in &all_planets {
+    /// Process resource production for all planets in the game state
+    /// This method should be called by GameState during tick processing  
+    pub fn process_production(&mut self, planets: &[Planet], event_bus: &mut EventBus) -> GameResult<()> {
+        for planet in planets {
             // Calculate production for this planet
             let production = self.calculate_planet_production(planet)?;
             
             // Track consumption
             self.consumption_tracking.insert(planet.id, production);
             
-            // Check for negative resources (consumption exceeding production)
+            // Check for resource shortages using functional approach
             let current_resources = planet.resources.current;
-            let mut shortage_resources = Vec::new();
-            
-            if current_resources.minerals + production.minerals < 0 {
-                shortage_resources.push(ResourceType::Minerals);
-            }
-            if current_resources.food + production.food < 0 {
-                shortage_resources.push(ResourceType::Food);
-            }
-            if current_resources.energy + production.energy < 0 {
-                shortage_resources.push(ResourceType::Energy);
-            }
-            if current_resources.alloys + production.alloys < 0 {
-                shortage_resources.push(ResourceType::Alloys);
-            }
-            if current_resources.components + production.components < 0 {
-                shortage_resources.push(ResourceType::Components);
-            }
-            if current_resources.fuel + production.fuel < 0 {
-                shortage_resources.push(ResourceType::Fuel);
-            }
+            let shortage_resources = self.detect_resource_shortages(&current_resources, &production);
             
             // Emit shortage events before applying production
             for resource_type in shortage_resources {
@@ -139,42 +120,19 @@ impl ResourceSystem {
                 ));
             }
             
-            // Apply production (can result in negative resources if consumption exceeds production)
-            // This validates against storage capacity
-            match planet_manager.add_resources(planet.id, production) {
-                Ok(()) => {
-                    // Emit successful production event
-                    event_bus.queue_event(GameEvent::SimulationEvent(
-                        SimulationEvent::ResourcesProduced {
-                            planet: planet.id,
-                            resources: production,
-                        }
-                    ));
+            // Calculate actual production considering storage constraints
+            let effective_production = self.calculate_effective_production(
+                &current_resources, &planet.resources.capacity, &production
+            )?;
+            
+            // This will be handled by GameState calling planet_manager.add_resources
+            // Emit production event with effective resources
+            event_bus.queue_event(GameEvent::SimulationEvent(
+                SimulationEvent::ResourcesProduced {
+                    planet: planet.id,
+                    resources: effective_production,
                 }
-                Err(_) => {
-                    // Handle overflow by capping to maximum capacity
-                    let capacity = planet.resources.capacity;
-                    let current = planet.resources.current;
-                    
-                    let capped_production = ResourceBundle {
-                        minerals: (capacity.minerals - current.minerals).min(production.minerals),
-                        food: (capacity.food - current.food).min(production.food),
-                        energy: (capacity.energy - current.energy).min(production.energy),
-                        alloys: (capacity.alloys - current.alloys).min(production.alloys),
-                        components: (capacity.components - current.components).min(production.components),
-                        fuel: (capacity.fuel - current.fuel).min(production.fuel),
-                    };
-                    
-                    planet_manager.add_resources(planet.id, capped_production)?;
-                    
-                    event_bus.queue_event(GameEvent::SimulationEvent(
-                        SimulationEvent::ResourcesProduced {
-                            planet: planet.id,
-                            resources: capped_production,
-                        }
-                    ));
-                }
-            }
+            ));
             
             // Emit planet updated state change
             event_bus.queue_event(GameEvent::StateChanged(StateChange::PlanetUpdated(planet.id)));
@@ -183,155 +141,232 @@ impl ResourceSystem {
         Ok(())
     }
     
-    pub fn process_transfer(&mut self, from: PlanetId, to: PlanetId, resources: ResourceBundle, planet_manager: &mut crate::managers::PlanetManager, event_bus: &mut EventBus) -> GameResult<()> {
-        // Validate source planet has enough resources
-        let source_planet = planet_manager.get_planet(from)?;
-        if !source_planet.resources.current.can_afford(&resources) {
+    /// Validate a resource transfer between planets
+    /// Returns the validated transfer amount (may be less than requested)
+    pub fn validate_transfer(&self, source: &Planet, destination: &Planet, requested: ResourceBundle) -> GameResult<ResourceBundle> {
+        // Validate source has enough resources
+        if !source.resources.current.can_afford(&requested) {
             return Err(GameError::InsufficientResources {
-                required: resources,
-                available: source_planet.resources.current,
+                required: requested,
+                available: source.resources.current,
             });
         }
         
-        // Validate destination exists and has capacity
-        let dest_planet = planet_manager.get_planet(to)?;
-        let dest_capacity = dest_planet.resources.capacity;
-        let dest_current = dest_planet.resources.current;
-        
-        // Check if destination can store the resources
-        if dest_current.minerals + resources.minerals > dest_capacity.minerals ||
-           dest_current.food + resources.food > dest_capacity.food ||
-           dest_current.energy + resources.energy > dest_capacity.energy ||
-           dest_current.alloys + resources.alloys > dest_capacity.alloys ||
-           dest_current.components + resources.components > dest_capacity.components ||
-           dest_current.fuel + resources.fuel > dest_capacity.fuel {
-            return Err(GameError::InvalidOperation("Destination storage capacity exceeded".into()));
+        // Validate destination capacity using existing storage methods
+        if !destination.resources.can_store(&requested) {
+            // Calculate maximum transferable amount
+            let available_space = destination.resources.available_space();
+            let max_transfer = ResourceBundle {
+                minerals: requested.minerals.min(available_space.minerals),
+                food: requested.food.min(available_space.food),
+                energy: requested.energy.min(available_space.energy),
+                alloys: requested.alloys.min(available_space.alloys),
+                components: requested.components.min(available_space.components),
+                fuel: requested.fuel.min(available_space.fuel),
+            };
+            
+            if max_transfer.total() == 0 {
+                return Err(GameError::InvalidOperation("Destination has no storage capacity".into()));
+            }
+            
+            return Ok(max_transfer);
         }
         
-        // Perform the transfer
-        planet_manager.remove_resources(from, resources)?;
-        planet_manager.add_resources(to, resources)?;
-        
-        // Emit state change events
-        event_bus.queue_event(GameEvent::StateChanged(StateChange::PlanetUpdated(from)));
-        event_bus.queue_event(GameEvent::StateChanged(StateChange::PlanetUpdated(to)));
-        
-        Ok(())
+        Ok(requested)
     }
     
     pub fn get_consumption_for_planet(&self, planet_id: PlanetId) -> Option<&ResourceBundle> {
         self.consumption_tracking.get(&planet_id)
     }
     
-    pub fn process_ship_loading(&mut self, ship_id: ShipId, planet_id: PlanetId, resources: ResourceBundle, 
-                               planet_manager: &mut crate::managers::PlanetManager, 
-                               ship_manager: &mut crate::managers::ShipManager, 
-                               event_bus: &mut EventBus) -> GameResult<()> {
-        // Validate ship exists and is at the planet
-        let ship = ship_manager.get_ship(ship_id)?;
-        let planet = planet_manager.get_planet(planet_id)?;
+    /// Validate ship cargo loading operation
+    /// Returns the actual loadable amount considering ship capacity and planet resources
+    pub fn validate_cargo_loading(&self, ship: &Ship, planet: &Planet, requested: ResourceBundle, current_tick: u64) -> GameResult<ResourceBundle> {
+        // Check if ship is at planet using proper orbital calculation
+        let planet_position = self.calculate_planet_position(&planet.position, current_tick);
+        let distance = ship.position.distance_to(&planet_position);
         
-        // Check if ship is at the planet (within loading range)
-        let distance = ((ship.position.x - planet.position.semi_major_axis).powi(2) + 
-                       (ship.position.y).powi(2)).sqrt(); // Simplified planet position
-        if distance > 1.0 { // Loading range of 1 unit
-            return Err(GameError::InvalidOperation("Ship not at planet for loading".into()));
+        if distance > 0.5 { // Realistic docking range
+            return Err(GameError::InvalidOperation(
+                format!("Ship {} not in docking range of planet {} (distance: {:.2})", 
+                       ship.id, planet.id, distance)
+            ));
         }
         
-        // Check if planet has enough resources
-        if !planet.resources.current.can_afford(&resources) {
+        // Check planet resource availability
+        if !planet.resources.current.can_afford(&requested) {
             return Err(GameError::InsufficientResources {
-                required: resources,
+                required: requested,
                 available: planet.resources.current,
             });
         }
         
-        // Load cargo onto ship
-        ship_manager.load_cargo(ship_id, resources)?;
+        // Check ship cargo capacity
+        if !ship.cargo.can_load(&requested, 0) {
+            let available_space = ship.cargo.available_space();
+            let max_loadable = ResourceBundle {
+                minerals: requested.minerals.min(available_space),
+                food: requested.food.min(available_space),
+                energy: requested.energy.min(available_space),
+                alloys: requested.alloys.min(available_space),
+                components: requested.components.min(available_space),
+                fuel: requested.fuel.min(available_space),
+            };
+            
+            if max_loadable.total() == 0 {
+                return Err(GameError::InvalidOperation("Ship cargo hold is full".into()));
+            }
+            
+            return Ok(max_loadable);
+        }
         
-        // Remove resources from planet
-        planet_manager.remove_resources(planet_id, resources)?;
-        
-        // Emit events
-        event_bus.queue_event(GameEvent::StateChanged(StateChange::PlanetUpdated(planet_id)));
-        event_bus.queue_event(GameEvent::StateChanged(StateChange::ShipUpdated(ship_id)));
-        
-        Ok(())
+        Ok(requested)
     }
     
-    pub fn process_ship_unloading(&mut self, ship_id: ShipId, planet_id: PlanetId,
-                                 planet_manager: &mut crate::managers::PlanetManager,
-                                 ship_manager: &mut crate::managers::ShipManager,
-                                 event_bus: &mut EventBus) -> GameResult<()> {
-        // Validate ship exists and is at the planet
-        let ship = ship_manager.get_ship(ship_id)?;
-        let planet = planet_manager.get_planet(planet_id)?;
+    /// Validate ship cargo unloading operation
+    /// Returns the actual unloadable amount considering planet storage capacity
+    pub fn validate_cargo_unloading(&self, ship: &Ship, planet: &Planet, current_tick: u64) -> GameResult<ResourceBundle> {
+        // Check if ship is at planet using proper orbital calculation
+        let planet_position = self.calculate_planet_position(&planet.position, current_tick);
+        let distance = ship.position.distance_to(&planet_position);
         
-        // Check if ship is at the planet (within unloading range)
-        let distance = ((ship.position.x - planet.position.semi_major_axis).powi(2) + 
-                       (ship.position.y).powi(2)).sqrt(); // Simplified planet position
-        if distance > 1.0 { // Unloading range of 1 unit
-            return Err(GameError::InvalidOperation("Ship not at planet for unloading".into()));
+        if distance > 0.5 { // Realistic docking range
+            return Err(GameError::InvalidOperation(
+                format!("Ship {} not in docking range of planet {} (distance: {:.2})", 
+                       ship.id, planet.id, distance)
+            ));
         }
         
-        // Get cargo contents
-        let cargo_resources = *ship_manager.get_cargo_contents(ship_id)?;
+        let cargo_resources = ship.cargo.resources;
         
-        // Check if planet can store the resources
-        let planet_capacity = planet.resources.capacity;
-        let planet_current = planet.resources.current;
-        
-        if planet_current.minerals + cargo_resources.minerals > planet_capacity.minerals ||
-           planet_current.food + cargo_resources.food > planet_capacity.food ||
-           planet_current.energy + cargo_resources.energy > planet_capacity.energy ||
-           planet_current.alloys + cargo_resources.alloys > planet_capacity.alloys ||
-           planet_current.components + cargo_resources.components > planet_capacity.components ||
-           planet_current.fuel + cargo_resources.fuel > planet_capacity.fuel {
-            return Err(GameError::InvalidOperation("Planet storage capacity would be exceeded".into()));
+        // Check planet storage capacity using existing methods
+        if !planet.resources.can_store(&cargo_resources) {
+            let available_space = planet.resources.available_space();
+            let max_unloadable = ResourceBundle {
+                minerals: cargo_resources.minerals.min(available_space.minerals),
+                food: cargo_resources.food.min(available_space.food),
+                energy: cargo_resources.energy.min(available_space.energy),
+                alloys: cargo_resources.alloys.min(available_space.alloys),
+                components: cargo_resources.components.min(available_space.components),
+                fuel: cargo_resources.fuel.min(available_space.fuel),
+            };
+            
+            if max_unloadable.total() == 0 {
+                return Err(GameError::InvalidOperation("Planet has no storage capacity".into()));
+            }
+            
+            return Ok(max_unloadable);
         }
         
-        // Unload cargo from ship
-        let unloaded_resources = ship_manager.unload_cargo(ship_id)?;
+        Ok(cargo_resources)
+    }
+    
+    /// Helper method to detect resource shortages
+    fn detect_resource_shortages(&self, current: &ResourceBundle, production: &ResourceBundle) -> Vec<ResourceType> {
+        let mut shortages = Vec::new();
         
-        // Add resources to planet
-        planet_manager.add_resources(planet_id, unloaded_resources)?;
+        if current.minerals + production.minerals < 0 {
+            shortages.push(ResourceType::Minerals);
+        }
+        if current.food + production.food < 0 {
+            shortages.push(ResourceType::Food);
+        }
+        if current.energy + production.energy < 0 {
+            shortages.push(ResourceType::Energy);
+        }
+        if current.alloys + production.alloys < 0 {
+            shortages.push(ResourceType::Alloys);
+        }
+        if current.components + production.components < 0 {
+            shortages.push(ResourceType::Components);
+        }
+        if current.fuel + production.fuel < 0 {
+            shortages.push(ResourceType::Fuel);
+        }
         
-        // Emit events
-        event_bus.queue_event(GameEvent::StateChanged(StateChange::PlanetUpdated(planet_id)));
-        event_bus.queue_event(GameEvent::StateChanged(StateChange::ShipUpdated(ship_id)));
+        shortages
+    }
+    
+    /// Calculate effective production considering storage constraints
+    fn calculate_effective_production(&self, current: &ResourceBundle, capacity: &ResourceBundle, production: &ResourceBundle) -> GameResult<ResourceBundle> {
+        // Handle positive production (capped by storage) and negative production (consumption)
+        let effective_production = ResourceBundle {
+            minerals: if production.minerals > 0 {
+                production.minerals.min(capacity.minerals - current.minerals)
+            } else {
+                production.minerals // Allow negative (consumption)
+            },
+            food: if production.food > 0 {
+                production.food.min(capacity.food - current.food)
+            } else {
+                production.food
+            },
+            energy: if production.energy > 0 {
+                production.energy.min(capacity.energy - current.energy)
+            } else {
+                production.energy
+            },
+            alloys: if production.alloys > 0 {
+                production.alloys.min(capacity.alloys - current.alloys)
+            } else {
+                production.alloys
+            },
+            components: if production.components > 0 {
+                production.components.min(capacity.components - current.components)
+            } else {
+                production.components
+            },
+            fuel: if production.fuel > 0 {
+                production.fuel.min(capacity.fuel - current.fuel)
+            } else {
+                production.fuel
+            },
+        };
         
-        Ok(())
+        Ok(effective_production)
+    }
+    
+    /// Calculate planet position at given tick for proper orbital mechanics
+    fn calculate_planet_position(&self, orbital_elements: &OrbitalElements, current_tick: u64) -> Vector2 {
+        let time_in_orbit = (current_tick as f32) / orbital_elements.period;
+        let angle = orbital_elements.phase + (time_in_orbit * 2.0 * std::f32::consts::PI);
+        
+        Vector2 {
+            x: orbital_elements.semi_major_axis * angle.cos(),
+            y: orbital_elements.semi_major_axis * angle.sin(),
+        }
     }
 }
 
 impl GameSystem for ResourceSystem {
     fn update(&mut self, _delta: f32, _event_bus: &mut EventBus) -> GameResult<()> {
-        // ResourceSystem processes production during tick events, not on update
+        // ResourceSystem processes production during tick events, not on continuous update
+        // All processing is coordinated through GameState to maintain architecture boundaries
         Ok(())
     }
     
     fn handle_event(&mut self, event: &GameEvent) -> GameResult<()> {
-        // The ResourceSystem only tracks events for validation purposes
-        // Actual processing is done through the public methods called by GameState
+        // ResourceSystem validates events but does not perform direct state mutations
+        // This maintains the EventBus architecture where only managers modify state
         match event {
             GameEvent::SimulationEvent(sim_event) => {
                 match sim_event {
                     SimulationEvent::TickCompleted(_tick) => {
-                        // Production processing happens in GameState::process_tick_production
+                        // Tick processing coordinated by GameState
+                    }
+                    SimulationEvent::ResourcesProduced { planet, resources } => {
+                        // Update consumption tracking for this planet
+                        self.consumption_tracking.insert(*planet, *resources);
                     }
                     _ => {}
                 }
             }
             GameEvent::PlayerCommand(cmd) => {
                 match cmd {
-                    PlayerCommand::TransferResources { from: _, to: _, resources: _ } => {
-                        // Transfer processing happens in GameState::process_resource_transfer
-                    }
-                    PlayerCommand::LoadShipCargo { ship: _, planet: _, resources: _ } => {
-                        // Cargo loading processing happens in GameState::process_ship_cargo_loading
-                    }
-                    PlayerCommand::UnloadShipCargo { ship: _, planet: _ } => {
-                        // Cargo unloading processing happens in GameState::process_ship_cargo_unloading
+                    PlayerCommand::TransferResources { .. } |
+                    PlayerCommand::LoadShipCargo { .. } |
+                    PlayerCommand::UnloadShipCargo { .. } => {
+                        // Commands validated and processed by GameState coordination
                     }
                     _ => {}
                 }

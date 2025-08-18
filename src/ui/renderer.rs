@@ -191,7 +191,7 @@ impl UIRenderer {
             let planets = state.planet_manager.get_all_planets();
             
             for planet in planets {
-                let world_pos = self.calculate_planet_position(planet, state.time_manager.get_tick(), interpolation);
+                let world_pos = self.calculate_planet_position(planet, state.time_manager.get_current_tick(), interpolation);
                 let screen_pos = self.world_to_screen(world_pos);
                 
                 // Don't render if off-screen
@@ -242,7 +242,7 @@ impl UIRenderer {
         for ship in ships {
             let world_pos = if let Some(trajectory) = &ship.trajectory {
                 // Interpolate ship position along trajectory
-                self.interpolate_ship_position(trajectory, state.time_manager.get_tick(), interpolation)
+                self.interpolate_ship_position(trajectory, state.time_manager.get_current_tick(), interpolation)
             } else {
                 ship.position
             };
@@ -329,7 +329,7 @@ impl UIRenderer {
             draw_text(status_text, 10.0, 30.0, 24.0, if self.paused { RED } else { GREEN });
         
         // Tick counter
-        let tick_text = format!("Tick: {}", state.time_manager.get_tick());
+        let tick_text = format!("Tick: {}", state.time_manager.get_current_tick());
         draw_text(&tick_text, 10.0, 55.0, 20.0, WHITE);
         
         // Camera position and zoom

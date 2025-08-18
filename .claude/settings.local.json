@@ -13,7 +13,10 @@
       "multiedit",
       "write",
       "Bash(cargo:*)",
-      "Bash(rustc:*)"
+      "Bash(rustc:*)",
+      "Bash(./time_manager_validation.exe)",
+      "Bash(RUST_BACKTRACE=1 cargo test systems::save_system::tests::test_save_validation --lib)",
+      "Bash(find:*)"
     ],
     "deny": [],
     "ask": []
