@@ -16,7 +16,10 @@
       "Bash(rustc:*)",
       "Bash(./time_manager_validation.exe)",
       "Bash(RUST_BACKTRACE=1 cargo test systems::save_system::tests::test_save_validation --lib)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(rustc:*)",
+      "Bash(rustc:*)",
+      "Bash(./test_ui_state.exe)"
     ],
     "deny": [],
     "ask": []
