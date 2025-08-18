@@ -9,7 +9,7 @@ pub type FactionId = u8;
 pub type PlayerId = u8;
 
 // Error handling
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum GameError {
     InvalidOperation(String),
     InsufficientResources { required: ResourceBundle, available: ResourceBundle },

@@ -66,6 +66,10 @@ impl PlanetManager {
         &self.planets
     }
     
+    pub fn get_all_planets_cloned(&self) -> GameResult<Vec<Planet>> {
+        Ok(self.planets.clone())
+    }
+    
     pub fn get_planets_by_faction(&self, faction: FactionId) -> Vec<&Planet> {
         self.planets.iter()
             .filter(|p| p.controller == Some(faction))
@@ -222,6 +226,25 @@ impl PlanetManager {
         planet.resources.capacity.components += additional_capacity.components;
         planet.resources.capacity.fuel += additional_capacity.fuel;
         
+        Ok(())
+    }
+    
+    pub fn load_planets(&mut self, planets: Vec<Planet>) -> GameResult<()> {
+        // Replace all planets with loaded data
+        self.planets = planets;
+        
+        // Rebuild the index
+        self.planet_index.clear();
+        for (index, planet) in self.planets.iter().enumerate() {
+            self.planet_index.insert(planet.id, index);
+        }
+        
+        // Update next_id to be higher than any existing ID
+        self.next_id = self.planets.iter()
+            .map(|p| p.id)
+            .max()
+            .unwrap_or(0) + 1;
+            
         Ok(())
     }
 }

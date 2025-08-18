@@ -11,7 +11,8 @@
       "glob",
       "task",
       "multiedit",
-      "write"
+      "write",
+      "Bash(cargo:*)"
     ],
     "deny": [],
     "ask": []

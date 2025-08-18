@@ -46,4 +46,30 @@ impl FactionManager {
         self.factions[*index].score = score;
         Ok(())
     }
+    
+    pub fn get_all_factions(&self) -> &Vec<Faction> {
+        &self.factions
+    }
+    
+    pub fn get_all_factions_cloned(&self) -> GameResult<Vec<Faction>> {
+        Ok(self.factions.clone())
+    }
+    
+    pub fn load_factions(&mut self, factions: Vec<Faction>) -> GameResult<()> {
+        // Replace all factions with loaded data
+        self.factions = factions;
+        
+        // Rebuild the index
+        self.faction_index.clear();
+        for (index, faction) in self.factions.iter().enumerate() {
+            self.faction_index.insert(faction.id, index);
+        }
+        
+        Ok(())
+    }
+    
+    pub fn handle_event(&mut self, _event: &GameEvent) -> GameResult<()> {
+        // FactionManager doesn't need to handle events currently
+        Ok(())
+    }
 }

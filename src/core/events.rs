@@ -50,6 +50,7 @@ pub enum StateChange {
     FactionUpdated(FactionId),
     VictoryConditionMet(VictoryType),
     GameOver(FactionId),
+    GameLoaded,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -70,6 +71,7 @@ pub enum SystemId {
     ConstructionSystem,
     PhysicsEngine,
     CombatResolver,
+    SaveSystem,
     UIRenderer,
 }
 
@@ -78,33 +80,42 @@ pub struct EventBus {
     pub subscribers: HashMap<SystemId, Vec<EventType>>,
     pub event_history: VecDeque<GameEvent>,
     history_limit: usize,
+    update_order: Vec<SystemId>,
 }
 
 impl EventBus {
     pub fn new() -> Self {
         Self {
-            queued_events: VecDeque::new(),
-            subscribers: HashMap::new(),
-            event_history: VecDeque::new(),
+            queued_events: VecDeque::with_capacity(256),
+            subscribers: HashMap::with_capacity(16),
+            event_history: VecDeque::with_capacity(100),
             history_limit: 100,
+            update_order: vec![
+                SystemId::UIRenderer,
+                SystemId::PhysicsEngine,
+                SystemId::ResourceSystem,
+                SystemId::PopulationSystem,
+                SystemId::ConstructionSystem,
+                SystemId::CombatResolver,
+                SystemId::TimeManager,
+            ],
         }
     }
     
     pub fn subscribe(&mut self, system: SystemId, event_type: EventType) {
         self.subscribers
             .entry(system)
-            .or_insert_with(Vec::new)
+            .or_insert_with(|| Vec::with_capacity(4))
             .push(event_type);
     }
     
     pub fn queue_event(&mut self, event: GameEvent) {
-        self.queued_events.push_back(event.clone());
-        
-        // Maintain history for debugging
-        self.event_history.push_back(event);
+        self.event_history.push_back(event.clone());
         if self.event_history.len() > self.history_limit {
             self.event_history.pop_front();
         }
+        
+        self.queued_events.push_back(event);
     }
     
     pub fn process_events(&mut self, state: &mut super::GameState) -> GameResult<()> {
@@ -115,62 +126,39 @@ impl EventBus {
                 GameEvent::StateChanged(_) => EventType::StateChanged,
             };
             
-            // Route to subscribed systems
-            for (system, subscriptions) in &self.subscribers {
-                if subscriptions.contains(&event_type) {
-                    match system {
-                        SystemId::TimeManager => {
-                            state.time_manager.handle_event(&event)?;
-                        }
-                        SystemId::PlanetManager => {
-                            state.planet_manager.handle_event(&event)?;
-                        }
-                        SystemId::PhysicsEngine => {
-                            state.physics_engine.handle_event(&event)?;
-                        }
-                        SystemId::ResourceSystem => {
-                            state.resource_system.handle_event(&event)?;
-                            // Handle special ResourceSystem event processing
-                            match &event {
-                                GameEvent::SimulationEvent(SimulationEvent::TickCompleted(_)) => {
-                                    state.process_tick_production()?;
-                                }
-                                GameEvent::PlayerCommand(PlayerCommand::TransferResources { from, to, resources }) => {
-                                    state.process_resource_transfer(*from, *to, *resources)?;
-                                }
-                                GameEvent::PlayerCommand(PlayerCommand::LoadShipCargo { ship, planet, resources }) => {
-                                    state.process_ship_cargo_loading(*ship, *planet, *resources)?;
-                                }
-                                GameEvent::PlayerCommand(PlayerCommand::UnloadShipCargo { ship, planet }) => {
-                                    state.process_ship_cargo_unloading(*ship, *planet)?;
-                                }
-                                _ => {}
-                            }
-                        }
-                        SystemId::PopulationSystem => {
-                            state.population_system.handle_event(&event)?;
-                            // Handle special PopulationSystem event processing
-                            match &event {
-                                GameEvent::SimulationEvent(SimulationEvent::TickCompleted(tick)) => {
-                                    state.process_population_growth(*tick)?;
-                                }
-                                GameEvent::PlayerCommand(PlayerCommand::AllocateWorkers { planet, allocation }) => {
-                                    state.process_worker_allocation(*planet, allocation.clone())?;
-                                }
-                                GameEvent::SimulationEvent(SimulationEvent::ShipArrived { ship, destination: _ }) => {
-                                    state.process_population_migration(*ship)?;
-                                }
-                                _ => {}
-                            }
-                        }
-                        _ => {
-                            // Other systems will be handled when implemented
-                        }
+            // Route to subscribed systems in update order
+            for &system_id in &self.update_order {
+                if let Some(subscriptions) = self.subscribers.get(&system_id) {
+                    if subscriptions.contains(&event_type) {
+                        self.route_to_system(system_id, &event, state)?;
                     }
+                }
+            }
+            
+            // Handle managers (no specific order required)
+            for (&system_id, subscriptions) in &self.subscribers {
+                if !self.update_order.contains(&system_id) && subscriptions.contains(&event_type) {
+                    self.route_to_system(system_id, &event, state)?;
                 }
             }
         }
         Ok(())
+    }
+    
+    fn route_to_system(&self, system_id: SystemId, event: &GameEvent, state: &mut super::GameState) -> GameResult<()> {
+        match system_id {
+            SystemId::TimeManager => state.time_manager.handle_event(event),
+            SystemId::PlanetManager => state.planet_manager.handle_event(event),
+            SystemId::ShipManager => state.ship_manager.handle_event(event),
+            SystemId::FactionManager => state.faction_manager.handle_event(event),
+            SystemId::PhysicsEngine => state.physics_engine.handle_event(event),
+            SystemId::ResourceSystem => state.resource_system.handle_event(event),
+            SystemId::PopulationSystem => state.population_system.handle_event(event),
+            SystemId::ConstructionSystem => state.construction_system.handle_event(event),
+            SystemId::CombatResolver => state.combat_resolver.handle_event(event),
+            SystemId::SaveSystem => state.save_system.handle_event(event),
+            SystemId::UIRenderer => state.ui_renderer.handle_event(event),
+        }
     }
     
     pub fn clear(&mut self) {

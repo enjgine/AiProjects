@@ -9,7 +9,7 @@ use std::collections::VecDeque;
 
 // Import managers and systems
 use crate::managers::{PlanetManager, ShipManager, FactionManager};
-use crate::systems::{TimeManager, ResourceSystem, PopulationSystem, ConstructionSystem, PhysicsEngine, CombatResolver};
+use crate::systems::{TimeManager, ResourceSystem, PopulationSystem, ConstructionSystem, PhysicsEngine, CombatResolver, SaveSystem};
 use crate::ui::UIRenderer;
 
 pub struct GameState {
@@ -23,6 +23,7 @@ pub struct GameState {
     pub construction_system: ConstructionSystem,
     pub physics_engine: PhysicsEngine,
     pub combat_resolver: CombatResolver,
+    pub save_system: SaveSystem,
     pub ui_renderer: UIRenderer,
 }
 
@@ -42,6 +43,10 @@ impl GameState {
         event_bus.subscribe(SystemId::ResourceSystem, events::EventType::PlayerCommand);
         event_bus.subscribe(SystemId::PopulationSystem, events::EventType::SimulationEvent);
         event_bus.subscribe(SystemId::PopulationSystem, events::EventType::PlayerCommand);
+        event_bus.subscribe(SystemId::CombatResolver, events::EventType::PlayerCommand);
+        event_bus.subscribe(SystemId::CombatResolver, events::EventType::SimulationEvent);
+        event_bus.subscribe(SystemId::SaveSystem, events::EventType::PlayerCommand);
+        event_bus.subscribe(SystemId::UIRenderer, events::EventType::StateChanged);
         
         Ok(Self {
             event_bus,
@@ -54,6 +59,7 @@ impl GameState {
             construction_system: ConstructionSystem::new(),
             physics_engine: PhysicsEngine::new(),
             combat_resolver: CombatResolver::new(),
+            save_system: SaveSystem::new(),
             ui_renderer: UIRenderer::new(),
         })
     }
@@ -135,6 +141,88 @@ impl GameState {
         let mut event_bus = std::mem::replace(&mut self.event_bus, EventBus::new());
         self.population_system.process_migration(ship_id, &mut self.planet_manager, &mut self.ship_manager, &mut event_bus)?;
         self.event_bus = event_bus;
+        Ok(())
+    }
+    
+    pub fn process_combat_resolution(&mut self, attacker: ShipId, defender: ShipId) -> GameResult<()> {
+        // Handle detailed combat resolution with access to ships and planets
+        let mut event_bus = std::mem::replace(&mut self.event_bus, EventBus::new());
+        
+        // Get ship information for combat calculations
+        let attacker_ship = self.ship_manager.get_ship(attacker)?;
+        let defender_ship = self.ship_manager.get_ship(defender)?;
+        
+        // Calculate combat strengths
+        let attacker_strength = self.combat_resolver.get_combat_modifier(attacker_ship.owner) * 
+            match attacker_ship.ship_class {
+                ShipClass::Scout => 1.0,
+                ShipClass::Transport => 0.5,
+                ShipClass::Warship => 5.0,
+                ShipClass::Colony => 0.1,
+            };
+            
+        let defender_strength = self.combat_resolver.get_combat_modifier(defender_ship.owner) * 
+            match defender_ship.ship_class {
+                ShipClass::Scout => 1.0,
+                ShipClass::Transport => 0.5,
+                ShipClass::Warship => 5.0,
+                ShipClass::Colony => 0.1,
+            };
+        
+        // Determine outcome using CombatResolver logic
+        let attacker_wins = attacker_strength >= defender_strength * 1.5;
+        
+        let mut attacker_losses = Vec::new();
+        let mut defender_losses = Vec::new();
+        
+        if attacker_wins {
+            // Attacker wins: 30% attacker losses, 50% defender losses
+            // For simplicity, destroy the defender ship
+            defender_losses.push(defender);
+        } else {
+            // Defender wins: 50% attacker losses, 30% defender losses
+            // For simplicity, destroy the attacker ship
+            attacker_losses.push(attacker);
+        }
+        
+        let outcome = CombatOutcome {
+            winner: if attacker_wins { attacker_ship.owner } else { defender_ship.owner },
+            attacker_losses,
+            defender_losses,
+        };
+        
+        // Emit the combat resolved event
+        event_bus.queue_event(GameEvent::SimulationEvent(
+            SimulationEvent::CombatResolved {
+                attacker,
+                defender,
+                outcome,
+            }
+        ));
+        
+        self.event_bus = event_bus;
+        Ok(())
+    }
+    
+    pub fn process_save_game(&mut self) -> GameResult<()> {
+        // Save the current game state
+        self.save_system.save_game(self)?;
+        Ok(())
+    }
+    
+    pub fn process_load_game(&mut self) -> GameResult<()> {
+        // Load game state from save file
+        let save_data = self.save_system.load_game()?;
+        
+        // Restore the complete game state
+        self.time_manager.set_tick(save_data.tick);
+        self.planet_manager.load_planets(save_data.planets)?;
+        self.ship_manager.load_ships(save_data.ships)?;
+        self.faction_manager.load_factions(save_data.factions)?;
+        
+        // Emit GameLoaded event
+        self.event_bus.queue_event(GameEvent::StateChanged(StateChange::GameLoaded));
+        
         Ok(())
     }
     

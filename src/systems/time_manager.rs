@@ -58,4 +58,12 @@ impl TimeManager {
     pub fn get_tick(&self) -> u64 {
         self.tick
     }
+    
+    pub fn get_current_tick(&self) -> u64 {
+        self.tick
+    }
+    
+    pub fn set_tick(&mut self, tick: u64) {
+        self.tick = tick;
+    }
 }
