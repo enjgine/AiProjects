@@ -2,6 +2,7 @@
 use stellar_dominion::core::*;
 use stellar_dominion::core::events::*;
 use stellar_dominion::core::types::*;
+use stellar_dominion::managers::{PlanetManager, ShipManager};
 
 #[test]
 fn test_no_direct_system_coupling() {
@@ -112,7 +113,7 @@ fn test_manager_methods_return_results() {
     let mut planet_mgr = PlanetManager::new();
     
     // All state mutations return GameResult
-    let result = planet_mgr.create_planet(OrbitalElements::default());
+    let result = planet_mgr.create_planet(OrbitalElements::default(), Some(1));
     assert!(result.is_ok());
 }
 
@@ -146,8 +147,8 @@ fn test_event_history_limited() {
 fn test_planet_id_uniqueness() {
     let mut planet_mgr = PlanetManager::new();
     
-    let id1 = planet_mgr.create_planet(OrbitalElements::default()).unwrap();
-    let id2 = planet_mgr.create_planet(OrbitalElements::default()).unwrap();
+    let id1 = planet_mgr.create_planet(OrbitalElements::default(), Some(1)).unwrap();
+    let id2 = planet_mgr.create_planet(OrbitalElements::default(), Some(1)).unwrap();
     
     assert_ne!(id1, id2);
 }

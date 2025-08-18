@@ -5,7 +5,13 @@
       "Bash(rustc --version)",
       "Bash(cargo --version)",
       "Bash(rustup --version)",
-      "Bash(echo $PATH)"
+      "Bash(echo $PATH)",
+      "Bash(cargo test:*)",
+      "edit",
+      "glob",
+      "task",
+      "multiedit",
+      "write"
     ],
     "deny": [],
     "ask": []

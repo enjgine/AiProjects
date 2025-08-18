@@ -38,6 +38,10 @@ impl GameState {
         event_bus.subscribe(SystemId::PhysicsEngine, events::EventType::SimulationEvent);
         event_bus.subscribe(SystemId::PhysicsEngine, events::EventType::PlayerCommand);
         event_bus.subscribe(SystemId::TimeManager, events::EventType::PlayerCommand);
+        event_bus.subscribe(SystemId::ResourceSystem, events::EventType::SimulationEvent);
+        event_bus.subscribe(SystemId::ResourceSystem, events::EventType::PlayerCommand);
+        event_bus.subscribe(SystemId::PopulationSystem, events::EventType::SimulationEvent);
+        event_bus.subscribe(SystemId::PopulationSystem, events::EventType::PlayerCommand);
         
         Ok(Self {
             event_bus,
@@ -69,6 +73,68 @@ impl GameState {
         event_bus.process_events(self)?;
         self.event_bus = event_bus;
         
+        Ok(())
+    }
+    
+    pub fn process_tick_production(&mut self) -> GameResult<()> {
+        // Handle resource production during tick processing
+        let mut event_bus = std::mem::replace(&mut self.event_bus, EventBus::new());
+        self.resource_system.process_production(&mut self.planet_manager, &mut event_bus)?;
+        self.event_bus = event_bus;
+        Ok(())
+    }
+    
+    pub fn process_resource_transfer(&mut self, from: PlanetId, to: PlanetId, resources: ResourceBundle) -> GameResult<()> {
+        // Handle resource transfers
+        let mut event_bus = std::mem::replace(&mut self.event_bus, EventBus::new());
+        self.resource_system.process_transfer(from, to, resources, &mut self.planet_manager, &mut event_bus)?;
+        self.event_bus = event_bus;
+        Ok(())
+    }
+    
+    pub fn process_ship_cargo_loading(&mut self, ship_id: ShipId, planet_id: PlanetId, resources: ResourceBundle) -> GameResult<()> {
+        // Handle ship cargo loading
+        let mut event_bus = std::mem::replace(&mut self.event_bus, EventBus::new());
+        self.resource_system.process_ship_loading(ship_id, planet_id, resources, 
+                                                 &mut self.planet_manager, 
+                                                 &mut self.ship_manager, 
+                                                 &mut event_bus)?;
+        self.event_bus = event_bus;
+        Ok(())
+    }
+    
+    pub fn process_ship_cargo_unloading(&mut self, ship_id: ShipId, planet_id: PlanetId) -> GameResult<()> {
+        // Handle ship cargo unloading
+        let mut event_bus = std::mem::replace(&mut self.event_bus, EventBus::new());
+        self.resource_system.process_ship_unloading(ship_id, planet_id,
+                                                   &mut self.planet_manager,
+                                                   &mut self.ship_manager,
+                                                   &mut event_bus)?;
+        self.event_bus = event_bus;
+        Ok(())
+    }
+    
+    pub fn process_population_growth(&mut self, tick: u64) -> GameResult<()> {
+        // Handle population growth during tick processing
+        let mut event_bus = std::mem::replace(&mut self.event_bus, EventBus::new());
+        self.population_system.process_growth(tick, &mut self.planet_manager, &mut event_bus)?;
+        self.event_bus = event_bus;
+        Ok(())
+    }
+    
+    pub fn process_worker_allocation(&mut self, planet_id: PlanetId, allocation: WorkerAllocation) -> GameResult<()> {
+        // Handle worker allocation changes
+        let mut event_bus = std::mem::replace(&mut self.event_bus, EventBus::new());
+        self.population_system.process_allocation(planet_id, allocation, &mut self.planet_manager, &mut event_bus)?;
+        self.event_bus = event_bus;
+        Ok(())
+    }
+    
+    pub fn process_population_migration(&mut self, ship_id: ShipId) -> GameResult<()> {
+        // Handle population migration when transport ships arrive
+        let mut event_bus = std::mem::replace(&mut self.event_bus, EventBus::new());
+        self.population_system.process_migration(ship_id, &mut self.planet_manager, &mut self.ship_manager, &mut event_bus)?;
+        self.event_bus = event_bus;
         Ok(())
     }
     

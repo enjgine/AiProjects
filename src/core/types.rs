@@ -233,7 +233,7 @@ pub struct Faction {
     pub score: i32,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum AIPersonality {
     Aggressive,
     Balanced,

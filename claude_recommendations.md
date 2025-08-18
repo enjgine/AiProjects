@@ -16,19 +16,19 @@
 ## 🏗️ ARCHITECTURE ISSUES & RECOMMENDATIONS
 
 ### Event System Architecture Problems
-- EventBus routing incomplete in `src/core/events.rs:123-126` - only TimeManager and PlanetManager handle events - Add complete match arms for all SystemId variants in EventBus::process_events method to route events to ResourceSystem, PopulationSystem, ConstructionSystem, PhysicsEngine, CombatResolver, UIRenderer, and SaveSystem.
-- Missing `SaveSystem` import in `src/core/mod.rs:11` causing compilation failure - Add `SaveSystem` to the use statement importing from crate::systems module. Current import list is incomplete and prevents SaveSystem from being instantiated in GameState::new().
-- Event subscription system inconsistent - some systems subscribe but don't implement handlers - Implement handle_event(&mut self, event: &GameEvent) -> GameResult<()> method for all systems that subscribe to events but currently have missing or stub implementations.
+- EventBus routing incomplete in `src/core/events.rs:123-126` - only TimeManager and PlanetManager handle events - Add complete match arms for all SystemId variants in EventBus::process_events method to route events to ResourceSystem, PopulationSystem, ConstructionSystem, PhysicsEngine, CombatResolver, UIRenderer, and SaveSystem. *Critical for system communication, prevents proper event-driven architecture*
+- Missing `SaveSystem` import in `src/core/mod.rs:11` causing compilation failure - Add `SaveSystem` to the use statement importing from crate::systems module. Current import list is incomplete and prevents SaveSystem from being instantiated in GameState::new(). *Prevents SaveSystem instantiation in GameState::new(), breaks modular architecture*
+- Event subscription system inconsistent - some systems subscribe but don't implement handlers - Implement handle_event(&mut self, event: &GameEvent) -> GameResult<()> method for all systems that subscribe to events but currently have missing or stub implementations. *Violates EventBus contract, systems can't process events they subscribe to*
 
 ### Manager Pattern Violations
-- Missing `handle_event` implementation in all managers except basic stubs
-- PlanetManager resource storage validation uses incorrect `can_afford` logic - should check individual capacity limits
-- Ship manager index rebuilding inefficient - use swap_remove pattern for O(1) deletions
+- Missing `handle_event` implementation in all managers except basic stubs *Breaks event-driven state updates, managers can't respond to state changes*
+- PlanetManager resource storage validation uses incorrect `can_afford` logic - should check individual capacity limits *Resource overflow possible, breaks game balance and storage constraints*
+- Ship manager index rebuilding inefficient - use swap_remove pattern for O(1) deletions *Performance degradation with large ship counts, affects real-time gameplay*
 
 ### System Implementation Gaps
-- All systems in `src/systems/` are placeholder implementations with empty methods
+- All systems in `src/systems/` are placeholder implementations with empty methods *No actual simulation occurs, game is non-functional*
 - No actual game logic implemented - systems only contain skeleton structures
-- Missing mathematical operations on Vector2 type required by physics calculations
+- Missing mathematical operations on Vector2 type required by physics calculations *PhysicsEngine cannot perform position updates or movement calculations*
 - UIRenderer completely unimplemented - no rendering or input handling
 
 ### Type System Issues
