@@ -367,7 +367,6 @@ impl SaveData {
 
 pub struct SaveSystem {
     version: u32,
-    compression: bool,
     save_directory: PathBuf,
     backup_count: u8,
 }
@@ -376,7 +375,6 @@ impl SaveSystem {
     pub fn new() -> Self {
         Self {
             version: 1,
-            compression: false,
             save_directory: PathBuf::from("saves"),
             backup_count: 3,
         }

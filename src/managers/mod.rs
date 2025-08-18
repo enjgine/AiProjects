@@ -16,8 +16,11 @@
 //! - ShipManager: Owns ships, handles movement, cargo, and combat interactions
 //! - FactionManager: Owns factions, tracks scores and player relationships
 
+/// Planet management implementation providing controlled access to planet data
 pub mod planet_manager;
+/// Ship management implementation handling fleet operations and movement
 pub mod ship_manager;
+/// Faction management implementation tracking player relationships and scores
 pub mod faction_manager;
 
 pub use planet_manager::PlanetManager;

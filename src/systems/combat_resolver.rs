@@ -4,17 +4,27 @@ use crate::core::types::*;
 use crate::core::events::*;
 use std::collections::HashMap;
 
+/// Represents an active combat engagement between ships or against a planet
 #[derive(Debug, Clone)]
 pub struct Battle {
+    /// ID of the attacking ship
     pub attacker: ShipId,
-    pub defender: Option<ShipId>, // None for planetary invasions
+    /// ID of the defending ship (None for planetary invasions)
+    pub defender: Option<ShipId>,
+    /// Location where the battle is taking place
     pub location: Vector2,
+    /// Game tick when the battle started
     pub start_tick: u64,
-    pub planet_id: Option<PlanetId>, // For planetary invasions
+    /// ID of the planet being invaded (for planetary invasions only)
+    pub planet_id: Option<PlanetId>,
+    /// Faction ID of the attacker
     pub attacker_faction: FactionId,
+    /// Faction ID of the defender
     pub defender_faction: FactionId,
 }
 
+/// System responsible for resolving combat between ships and planetary invasions
+/// Operates on a delayed resolution model for deterministic gameplay
 pub struct CombatResolver {
     active_battles: Vec<Battle>,
     combat_modifiers: HashMap<FactionId, f32>,
@@ -23,6 +33,7 @@ pub struct CombatResolver {
 }
 
 impl CombatResolver {
+    /// Creates a new CombatResolver instance
     pub fn new() -> Self {
         Self {
             active_battles: Vec::new(),
@@ -32,6 +43,7 @@ impl CombatResolver {
         }
     }
     
+    /// Updates the combat resolver, processing active battles and emitting results
     pub fn update(&mut self, _delta: f32, event_bus: &mut EventBus) -> GameResult<()> {
         // Emit any pending combat results from previous tick
         self.emit_pending_results(event_bus)?;
@@ -54,6 +66,7 @@ impl CombatResolver {
         Ok(())
     }
     
+    /// Handles incoming events, processing combat commands and simulation updates
     pub fn handle_event(&mut self, event: &GameEvent) -> GameResult<()> {
         match event {
             GameEvent::PlayerCommand(cmd) => {
@@ -144,7 +157,7 @@ impl CombatResolver {
         Ok(())
     }
     
-    fn check_planetary_invasion(&mut self, ship_id: ShipId, planet_id: PlanetId) -> GameResult<()> {
+    fn check_planetary_invasion(&mut self, ship_id: ShipId, _planet_id: PlanetId) -> GameResult<()> {
         // Check if ship is already in combat
         if self.is_ship_in_combat(ship_id) {
             return Err(GameError::InvalidOperation(
@@ -257,6 +270,7 @@ impl CombatResolver {
     }
     
     /// Calculate total combat strength for a fleet
+    #[allow(dead_code)]
     fn calculate_fleet_strength(&self, ships: &[ShipClass], faction_modifier: f32) -> f32 {
         let base_strength: f32 = ships.iter()
             .map(|ship_class| self.calculate_ship_strength(*ship_class))
@@ -266,6 +280,7 @@ impl CombatResolver {
     }
     
     /// Determine combat outcome based on strength comparison
+    #[allow(dead_code)]
     fn determine_outcome(&self, attacker_strength: f32, defender_strength: f32, is_planetary: bool) -> (bool, f32, f32) {
         let effective_defender_strength = if is_planetary {
             defender_strength * 2.0 // Planetary defense multiplies by 2

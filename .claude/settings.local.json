@@ -19,7 +19,8 @@
       "Bash(find:*)",
       "Bash(rustc:*)",
       "Bash(rustc:*)",
-      "Bash(./test_ui_state.exe)"
+      "Bash(./test_ui_state.exe)",
+      "mcp__ide__getDiagnostics"
     ],
     "deny": [],
     "ask": []

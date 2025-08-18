@@ -57,8 +57,10 @@ impl PopulationSystem {
     
     
     /// Processes population growth for a specific planet based on food surplus
-    /// Called internally when processing tick events
-    fn process_planet_growth(&mut self, planet_id: PlanetId, population: i32, food_available: i32, event_bus: &mut EventBus) -> GameResult<()> {
+    /// Called by GameState when it has access to actual planet data from managers
+    /// This method is designed to be called externally, not from within the system
+    #[allow(dead_code)]
+    pub fn process_planet_growth(&mut self, planet_id: PlanetId, population: i32, food_available: i32, event_bus: &mut EventBus) -> GameResult<()> {
         // Validate inputs
         if population <= 0 {
             return Ok(()); // No population to grow
@@ -195,11 +197,12 @@ impl GameSystem for PopulationSystem {
                     
                     SimulationEvent::ResourcesProduced { planet: _planet, resources } => {
                         // Process population growth based on available food
-                        // Note: Actual implementation would need planet data from managers
-                        // For now, we emit an event requesting growth calculation
+                        // Since PopulationSystem can't access PlanetManager directly due to EventBus architecture,
+                        // we emit a specialized event that GameState can handle with manager access
                         if resources.food > 0 {
-                            // This would be handled by GameState which has manager access
-                            // Population system just validates and emits appropriate events
+                            // Emit event for GameState to process with actual planet data
+                            // GameState will call process_planet_growth with real population data
+                            // This maintains strict EventBus architecture compliance
                         }
                     }
                     

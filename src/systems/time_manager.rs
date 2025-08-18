@@ -18,6 +18,12 @@ const MAX_SPEED_MULTIPLIER: f32 = 10.0;
 const TICK_DURATION_SECONDS: f64 = 0.1;
 const MAX_SAFE_TICK: u64 = u64::MAX - 1000; // Leave buffer for overflow protection
 
+impl Default for TimeManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TimeManager {
     /// Creates a new TimeManager with default settings.
     /// Fixed timestep is 0.1 seconds for deterministic simulation.
@@ -74,19 +80,16 @@ impl TimeManager {
     /// # Returns
     /// GameResult indicating success or validation failure
     pub fn handle_event(&mut self, event: &GameEvent) -> GameResult<()> {
-        match event {
-            GameEvent::PlayerCommand(cmd) => {
-                match cmd {
-                    crate::core::events::PlayerCommand::SetGameSpeed(speed) => {
-                        self.set_speed_multiplier(*speed)?;
-                    }
-                    crate::core::events::PlayerCommand::PauseGame(paused) => {
-                        self.paused = *paused;
-                    }
-                    _ => {}
+        if let GameEvent::PlayerCommand(cmd) = event {
+            match cmd {
+                crate::core::events::PlayerCommand::SetGameSpeed(speed) => {
+                    self.set_speed_multiplier(*speed)?;
                 }
+                crate::core::events::PlayerCommand::PauseGame(paused) => {
+                    self.paused = *paused;
+                }
+                _ => {}
             }
-            _ => {}
         }
         Ok(())
     }
@@ -95,6 +98,11 @@ impl TimeManager {
     /// Each tick represents 0.1 seconds of game time.
     pub fn get_current_tick(&self) -> u64 {
         self.tick
+    }
+    
+    /// Alias for get_current_tick() for compatibility with tests.
+    pub fn get_tick(&self) -> u64 {
+        self.get_current_tick()
     }
     
     /// Sets the current tick (used for save/load functionality).
@@ -125,7 +133,7 @@ impl TimeManager {
     /// # Returns
     /// GameResult indicating success or validation failure
     pub fn set_speed_multiplier(&mut self, speed: f32) -> GameResult<()> {
-        if speed < MIN_SPEED_MULTIPLIER || speed > MAX_SPEED_MULTIPLIER {
+        if !(MIN_SPEED_MULTIPLIER..=MAX_SPEED_MULTIPLIER).contains(&speed) {
             return Err(GameError::InvalidOperation(
                 format!("Speed multiplier {} out of range [{}, {}]", 
                     speed, MIN_SPEED_MULTIPLIER, MAX_SPEED_MULTIPLIER)
@@ -170,7 +178,7 @@ impl TimeManager {
             ));
         }
         
-        if self.speed_multiplier < MIN_SPEED_MULTIPLIER || self.speed_multiplier > MAX_SPEED_MULTIPLIER {
+        if !(MIN_SPEED_MULTIPLIER..=MAX_SPEED_MULTIPLIER).contains(&self.speed_multiplier) {
             return Err(GameError::SystemError(
                 "Speed multiplier out of valid range".to_string()
             ));

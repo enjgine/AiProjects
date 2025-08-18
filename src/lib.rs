@@ -81,8 +81,11 @@
 
 // Core module declarations
 pub mod core;
+/// Data management layer - Contains manager structs that own and provide CRUD operations for game entities
 pub mod managers;
+/// Simulation logic layer - Contains system structs that process game logic and emit events
 pub mod systems;
+/// User interface layer - Contains UI rendering and input handling components
 pub mod ui;
 
 // Public API exports - carefully controlled interface
@@ -342,14 +345,9 @@ pub mod setup {
     pub fn validate_game_state(game: &GameState) -> GameResult<()> {
         // Validate tick counter is in valid range
         let current_tick = game.get_current_tick();
-        if current_tick < 0 {
-            return Err(GameError::SystemError(
-                format!("Invalid tick counter: {} (must be >= 0)", current_tick)
-            ));
-        }
         
         // Check for tick overflow protection
-        if current_tick as u64 > (u64::MAX - 10000) {
+        if current_tick > (u64::MAX - 10000) {
             return Err(GameError::SystemError(
                 format!("Tick counter approaching overflow: {}", current_tick)
             ));
@@ -430,8 +428,10 @@ pub mod debug {
     pub fn validate_architecture(game: &GameState) -> Result<(), String> {
         // Validate basic state integrity
         let current_tick = game.get_current_tick();
-        if current_tick < 0 {
-            return Err(format!("Invalid tick counter: {} (must be >= 0)", current_tick));
+        
+        // Check for tick overflow (u64 is always >= 0, so no need to check < 0)
+        if current_tick > (u64::MAX - 10000) {
+            return Err(format!("Tick counter approaching overflow: {}", current_tick));
         }
         
         // TODO: Add comprehensive architecture validation:
@@ -500,10 +500,16 @@ pub mod test_utils {
     /// assert!(game.get_current_tick() > 0);
     /// ```
     pub fn simulate_tick(game: &mut GameState) -> GameResult<()> {
-        if !config::is_tick_value_safe(game.get_current_tick()) {
+        let current_tick = game.get_current_tick();
+        // Convert u64 to i64 for validation, checking for overflow
+        let tick_as_i64 = current_tick.try_into()
+            .map_err(|_| GameError::SystemError(
+                format!("Tick counter too large for validation: {}", current_tick)
+            ))?;
+            
+        if !config::is_tick_value_safe(tick_as_i64) {
             return Err(GameError::SystemError(
-                format!("Cannot simulate tick on invalid game state (tick: {})", 
-                       game.get_current_tick())
+                format!("Cannot simulate tick on invalid game state (tick: {})", current_tick)
             ));
         }
         

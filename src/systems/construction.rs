@@ -6,20 +6,30 @@ use std::collections::HashMap;
 /// Represents a building construction order in the queue
 #[derive(Debug, Clone)]
 pub struct ConstructionOrder {
+    /// The type of building being constructed
     pub building_type: BuildingType,
+    /// The planet where construction is taking place
     pub planet_id: PlanetId,
+    /// The tick when construction started
     pub start_tick: u64,
+    /// The tick when construction will be completed
     pub completion_tick: u64,
+    /// The resources that were paid for this construction
     pub cost_paid: ResourceBundle,
 }
 
 /// Represents a ship construction order in the queue
 #[derive(Debug, Clone)]
 pub struct ShipOrder {
+    /// The class of ship being constructed
     pub ship_class: ShipClass,
+    /// The planet where construction is taking place
     pub planet_id: PlanetId,
+    /// The tick when construction started
     pub start_tick: u64,
+    /// The tick when construction will be completed
     pub completion_tick: u64,
+    /// The resources that were paid for this construction
     pub cost_paid: ResourceBundle,
 }
 
@@ -33,6 +43,7 @@ pub struct ConstructionSystem {
 }
 
 impl ConstructionSystem {
+    /// Creates a new ConstructionSystem with predefined building and ship costs
     pub fn new() -> Self {
         let mut building_costs = HashMap::new();
         let mut ship_costs = HashMap::new();
@@ -300,7 +311,7 @@ impl ConstructionSystem {
         
         // Emit completion events with placeholder ship IDs
         // Real implementation would get ship ID from ShipManager
-        for (planet_id, order) in completed_orders {
+        for (planet_id, _order) in completed_orders {
             event_bus.queue_event(GameEvent::SimulationEvent(
                 crate::core::events::SimulationEvent::ShipCompleted {
                     planet: planet_id,
@@ -438,7 +449,7 @@ mod tests {
     #[test]
     fn test_building_construction_request() {
         let mut system = ConstructionSystem::new();
-        let mut event_bus = EventBus::new();
+        let _event_bus = EventBus::new();
         
         // Test building construction request
         let result = system.request_building_construction(1, BuildingType::Mine);

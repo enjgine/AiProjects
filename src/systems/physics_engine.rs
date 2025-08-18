@@ -24,12 +24,17 @@ pub struct PhysicsEngine {
     /// Flag to defer event emission until update() phase
     needs_tick_processing: bool,
     /// Cached distances between planets for performance
+    #[allow(dead_code)]
     planet_distances: HashMap<(PlanetId, PlanetId), f32>,
     /// Maximum number of planets to avoid unbounded iterations
     max_planets: u32,
 }
 
 impl PhysicsEngine {
+    /// Creates a new PhysicsEngine with default configuration.
+    /// 
+    /// Initializes all internal data structures and sets safe defaults
+    /// for orbital calculations and trajectory management.
     pub fn new() -> Self {
         Self {
             orbital_cache: HashMap::with_capacity(64), // Pre-allocate for performance
@@ -42,6 +47,14 @@ impl PhysicsEngine {
         }
     }
     
+    /// Updates the physics engine state and processes any pending calculations.
+    /// 
+    /// This method should be called once per frame to handle deferred event emission
+    /// and maintain physics state consistency.
+    /// 
+    /// # Arguments
+    /// * `_delta` - Time elapsed since last update (unused in fixed timestep system)
+    /// * `event_bus` - EventBus for emitting physics-related events
     pub fn update(&mut self, _delta: f32, event_bus: &mut EventBus) -> GameResult<()> {
         // Process any pending tick processing
         if self.needs_tick_processing {
@@ -51,6 +64,13 @@ impl PhysicsEngine {
         Ok(())
     }
     
+    /// Handles incoming game events and updates physics state accordingly.
+    /// 
+    /// Processes tick events, ship movement commands, and trajectory completions
+    /// to maintain accurate physics simulation state.
+    /// 
+    /// # Arguments
+    /// * `event` - The game event to process
     pub fn handle_event(&mut self, event: &GameEvent) -> GameResult<()> {
         match event {
             GameEvent::SimulationEvent(SimulationEvent::TickCompleted(tick)) => {
@@ -126,6 +146,17 @@ impl PhysicsEngine {
         }
     }
     
+    /// Calculates the orbital position of a celestial body at a given time.
+    /// 
+    /// Uses circular orbit approximation to determine position based on
+    /// orbital elements and current simulation tick.
+    /// 
+    /// # Arguments
+    /// * `orbital_elements` - The orbital parameters of the body
+    /// * `tick` - Current simulation tick
+    /// 
+    /// # Returns
+    /// The calculated position vector, or origin for invalid orbital elements
     pub fn calculate_orbital_position(&self, orbital_elements: &OrbitalElements, tick: u64) -> Vector2 {
         // Validate orbital elements to prevent invalid calculations
         if orbital_elements.period <= 0.0 {

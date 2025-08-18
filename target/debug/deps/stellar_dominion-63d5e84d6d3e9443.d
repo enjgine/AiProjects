@@ -27,5 +27,4 @@ src\ui\panels\ship_panel.rs:
 src\ui\panels\resource_panel.rs:
 src\../README.md:
 
-# env-dep:CARGO_CFG_TARGET_ARCH
 # env-dep:CARGO_PKG_VERSION=0.1.0

@@ -1,6 +1,5 @@
 // src/core/events.rs
 use super::types::*;
-use super::GameSystem;
 use std::collections::{HashMap, VecDeque};
 
 #[derive(Debug, Clone)]
@@ -118,48 +117,6 @@ impl EventBus {
         self.queued_events.push_back(event);
     }
     
-    pub fn process_events(&mut self, state: &mut super::GameState) -> GameResult<()> {
-        while let Some(event) = self.queued_events.pop_front() {
-            let event_type = match &event {
-                GameEvent::PlayerCommand(_) => EventType::PlayerCommand,
-                GameEvent::SimulationEvent(_) => EventType::SimulationEvent,
-                GameEvent::StateChanged(_) => EventType::StateChanged,
-            };
-            
-            // Route to subscribed systems in update order
-            for &system_id in &self.update_order {
-                if let Some(subscriptions) = self.subscribers.get(&system_id) {
-                    if subscriptions.contains(&event_type) {
-                        self.route_to_system(system_id, &event, state)?;
-                    }
-                }
-            }
-            
-            // Handle managers (no specific order required)
-            for (&system_id, subscriptions) in &self.subscribers {
-                if !self.update_order.contains(&system_id) && subscriptions.contains(&event_type) {
-                    self.route_to_system(system_id, &event, state)?;
-                }
-            }
-        }
-        Ok(())
-    }
-    
-    fn route_to_system(&self, system_id: SystemId, event: &GameEvent, state: &mut super::GameState) -> GameResult<()> {
-        match system_id {
-            SystemId::TimeManager => state.time_manager.handle_event(event),
-            SystemId::PlanetManager => state.planet_manager.handle_event(event),
-            SystemId::ShipManager => state.ship_manager.handle_event(event),
-            SystemId::FactionManager => state.faction_manager.handle_event(event),
-            SystemId::PhysicsEngine => state.physics_engine.handle_event(event),
-            SystemId::ResourceSystem => state.resource_system.handle_event(event),
-            SystemId::PopulationSystem => state.population_system.handle_event(event),
-            SystemId::ConstructionSystem => state.construction_system.handle_event(event),
-            SystemId::CombatResolver => state.combat_resolver.handle_event(event),
-            SystemId::SaveSystem => state.save_system.handle_event(event),
-            SystemId::UIRenderer => state.ui_renderer.handle_event(event),
-        }
-    }
     
     pub fn clear(&mut self) {
         self.queued_events.clear();
