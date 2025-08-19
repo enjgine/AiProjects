@@ -400,12 +400,14 @@ impl SaveSystem {
             GameEvent::PlayerCommand(cmd) => {
                 match cmd {
                     crate::core::events::PlayerCommand::SaveGame => {
-                        // SaveGame handling will be done by the GameState directly
-                        // because SaveSystem doesn't have access to the full game state
+                        // SaveGame events are handled via the save_game_event_handler
+                        // which needs access to the full GameState
+                        // This method is called from GameState after routing
                     }
                     crate::core::events::PlayerCommand::LoadGame => {
-                        // LoadGame handling will be done by the GameState directly
-                        // because SaveSystem doesn't have access to the full game state
+                        // LoadGame events are handled via the load_game_event_handler
+                        // which needs access to the full GameState
+                        // This method is called from GameState after routing
                     }
                     _ => {}
                 }
@@ -414,6 +416,7 @@ impl SaveSystem {
         }
         Ok(())
     }
+
     
     pub fn save_game(&self, game_state: &GameState) -> GameResult<()> {
         self.save_game_to_slot(game_state, "quicksave")
@@ -523,16 +526,40 @@ impl SaveSystem {
             
             if current_backup.exists() {
                 if next_backup.exists() {
-                    std::fs::remove_file(&next_backup).ok(); // Ignore errors for cleanup
+                    // Try multiple times to remove the file if it's locked
+                    for _attempt in 0..3 {
+                        if std::fs::remove_file(&next_backup).is_ok() {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
                 }
-                rename(&current_backup, &next_backup).ok(); // Ignore errors for cleanup
+                // Try multiple times to rename if file is locked
+                for _attempt in 0..3 {
+                    if rename(&current_backup, &next_backup).is_ok() {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
             }
         }
         
-        // Create new backup
+        // Create new backup with retry logic
         let first_backup = save_path.with_extension("bak1");
-        copy(save_path, &first_backup)
-            .map_err(|e| GameError::SystemError(format!("Failed to create backup: {}", e)))?;
+        let mut last_error = None;
+        for _attempt in 0..3 {
+            match copy(save_path, &first_backup) {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    last_error = Some(e);
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+        }
+        
+        if let Some(e) = last_error {
+            return Err(GameError::SystemError(format!("Failed to create backup: {}", e)));
+        }
         
         Ok(())
     }

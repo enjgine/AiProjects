@@ -20,9 +20,15 @@
       "Bash(rustc:*)",
       "Bash(rustc:*)",
       "Bash(./test_ui_state.exe)",
-      "mcp__ide__getDiagnostics"
+      "mcp__ide__getDiagnostics",
+      "Bash(RUST_BACKTRACE=1 cargo test systems::time_manager::tests::test_precision_with_f64 --lib)",
+      "Bash(RUST_BACKTRACE=1 cargo test test_save_system_integration --test save_system_integration)",
+      "Bash(RUST_BACKTRACE=1 cargo test test_save_load_preserves_game_integrity --test save_system_integration)"
     ],
     "deny": [],
-    "ask": []
+    "ask": [],
+    "additionalDirectories": [
+      "C:\\c\\Users\\enjgi\\AiProject"
+    ]
   }
 }

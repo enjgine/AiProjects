@@ -62,7 +62,7 @@ const CAMERA_DRAG_SENSITIVITY: f32 = 1.0;
 const MAX_CAMERA_BOUND: f32 = 10000.0;
 
 // Selection and interaction
-const SELECTION_TOLERANCE: f32 = 25.0; // pixels - slightly larger for better UX
+// const SELECTION_TOLERANCE: f32 = 25.0; // pixels - slightly larger for better UX - TODO: implement selection logic
 const DOUBLE_CLICK_TIME_MS: u64 = 300; // milliseconds for double-click detection
 
 // Performance controls

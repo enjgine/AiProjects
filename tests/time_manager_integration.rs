@@ -1,7 +1,6 @@
 // tests/time_manager_integration.rs
 use stellar_dominion::core::*;
 use stellar_dominion::core::events::*;
-use stellar_dominion::core::types::*;
 
 #[test]
 fn test_time_manager_eventbus_integration() {
@@ -13,11 +12,11 @@ fn test_time_manager_eventbus_integration() {
     ));
     
     // Process events (should route to TimeManager)
-    let result = game_state.event_bus.process_events(&mut game_state);
+    let result = game_state.process_queued_events_for_test();
     assert!(result.is_ok());
     
     // Verify speed was applied
-    assert_eq!(game_state.time_manager.speed_multiplier, 2.0);
+    assert_eq!(game_state.time_manager.get_speed_multiplier(), 2.0);
 }
 
 #[test]
@@ -30,10 +29,10 @@ fn test_time_manager_pause_integration() {
     ));
     
     // Process events
-    game_state.event_bus.process_events(&mut game_state).unwrap();
+    game_state.process_queued_events_for_test().unwrap();
     
     // Verify pause was applied
-    assert!(game_state.time_manager.paused);
+    assert!(game_state.time_manager.is_paused());
     
     // Run a fixed update cycle
     game_state.fixed_update(0.1).unwrap();
@@ -123,7 +122,7 @@ fn test_event_processing_after_time_update() {
     game_state.fixed_update(0.1).unwrap();
     
     // Event should be processed and speed should be changed
-    assert_eq!(game_state.time_manager.speed_multiplier, 3.0);
+    assert_eq!(game_state.time_manager.get_speed_multiplier(), 3.0);
     
     // Should have generated a tick at 1x speed (speed change applied after this tick)
     assert_eq!(game_state.time_manager.get_tick(), 1);
@@ -158,9 +157,9 @@ fn test_multiple_commands_same_frame() {
     ));
     
     // Process all events
-    game_state.event_bus.process_events(&mut game_state).unwrap();
+    game_state.process_queued_events_for_test().unwrap();
     
     // Final state should reflect all commands
-    assert!(!game_state.time_manager.paused); // Last pause command was false
-    assert_eq!(game_state.time_manager.speed_multiplier, 5.0);
+    assert!(!game_state.time_manager.is_paused()); // Last pause command was false
+    assert_eq!(game_state.time_manager.get_speed_multiplier(), 5.0);
 }

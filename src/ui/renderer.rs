@@ -9,24 +9,36 @@ use std::collections::HashMap;
 // Constants for improved maintainability and performance tuning
 const DEFAULT_SCREEN_WIDTH: f32 = 800.0;
 const DEFAULT_SCREEN_HEIGHT: f32 = 600.0;
+#[allow(dead_code)]
 const MIN_ZOOM: f32 = 0.1;
+#[allow(dead_code)]
 const MAX_ZOOM: f32 = 10.0;
+#[allow(dead_code)]
 const ZOOM_FACTOR: f32 = 1.1;
 const DOUBLE_CLICK_THRESHOLD: f32 = 0.3;
 const _STAR_COUNT_DIVISOR: f32 = 4000.0;
 const MAX_STARS: usize = 300;
+#[allow(dead_code)]
 const ORBIT_VISIBILITY_THRESHOLD: f32 = 0.3;
+#[allow(dead_code)]
 const DETAIL_ZOOM_THRESHOLD: f32 = 0.5;
+#[allow(dead_code)]
 const HIGH_DETAIL_ZOOM_THRESHOLD: f32 = 0.8;
+#[allow(dead_code)]
 const FRUSTUM_CULLING_MARGIN: f32 = 50.0;
+#[allow(dead_code)]
 const CACHE_INVALIDATION_ZOOM_THRESHOLD: f32 = 0.05;
 const _PLANET_SELECTION_RADIUS: f32 = 20.0;
 const _SHIP_SELECTION_RADIUS: f32 = 15.0;
+#[allow(dead_code)]
 const ORBITAL_SCALE_FACTOR: f32 = 100.0;
 
 // Performance optimization constants
+#[allow(dead_code)]
 const MIN_VISIBLE_SIZE: f32 = 1.0;
+#[allow(dead_code)]
 const MAX_TRAJECTORY_LINE_DISTANCE: f32 = 1000.0;
+#[allow(dead_code)]
 const CACHE_CLEANUP_INTERVAL: u64 = 300; // Clean cache every 300 frames
 
 pub struct UIRenderer {
@@ -343,11 +355,11 @@ impl UIRenderer {
         }
     }
     
-    fn render_planets(&mut self, _state: &GameState, _interpolation: f32) -> GameResult<()> {
+    fn render_planets(&mut self, state: &GameState, _interpolation: f32) -> GameResult<()> {
         #[cfg(not(test))]
         {
-            let planets = _state.planet_manager.get_all_planets();
-            let current_tick = _state.time_manager.get_current_tick();
+            let planets = state.planet_manager.get_all_planets();
+            let current_tick = state.time_manager.get_current_tick();
             
             for planet in planets {
                 // Use cached position if available and still valid
@@ -849,6 +861,7 @@ impl UIRenderer {
         false
     }
     
+    #[allow(dead_code)]
     fn handle_click(&mut self, x: f32, y: f32, _events: &mut EventBus, is_double_click: bool, _state: &GameState) -> GameResult<()> {
         // Validate input coordinates
         if !x.is_finite() || !y.is_finite() {
@@ -903,6 +916,7 @@ impl UIRenderer {
         Ok(())
     }
     
+    #[allow(dead_code)]
     fn handle_right_click(&mut self, x: f32, y: f32, _events: &mut EventBus, _state: &GameState) -> GameResult<()> {
         // Validate input coordinates
         if !x.is_finite() || !y.is_finite() {
@@ -1549,6 +1563,7 @@ impl UIRenderer {
     /// * `Ok(Some(PlanetId))` if a planet is found at the position
     /// * `Ok(None)` if no planet is found
     /// * `Err(GameError)` if an error occurs during selection
+    #[allow(dead_code)]
     fn find_planet_at_position(&self, _screen_pos: Vector2, _state: &GameState) -> GameResult<Option<PlanetId>> {
         let _planets = _state.planet_manager.get_all_planets();
         let _current_tick = _state.time_manager.get_current_tick();
@@ -1592,6 +1607,7 @@ impl UIRenderer {
     /// * `Ok(Some(ShipId))` if a ship is found at the position
     /// * `Ok(None)` if no ship is found
     /// * `Err(GameError)` if an error occurs during selection
+    #[allow(dead_code)]
     fn find_ship_at_position(&self, _screen_pos: Vector2, _state: &GameState) -> GameResult<Option<ShipId>> {
         let _ships = _state.ship_manager.get_all_ships();
         let _current_tick = _state.time_manager.get_current_tick();

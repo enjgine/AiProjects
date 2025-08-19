@@ -137,9 +137,43 @@ impl GameState {
             SystemId::PopulationSystem => self.population_system.handle_event(event),
             SystemId::ConstructionSystem => self.construction_system.handle_event(event),
             SystemId::CombatResolver => self.combat_resolver.handle_event(event),
-            SystemId::SaveSystem => self.save_system.handle_event(event),
+            SystemId::SaveSystem => {
+                // Handle SaveSystem events specially since they need full GameState access
+                if let GameEvent::PlayerCommand(cmd) = event {
+                    match cmd {
+                        PlayerCommand::SaveGame => self.handle_save_game_command(),
+                        PlayerCommand::LoadGame => self.handle_load_game_command(),
+                        _ => self.save_system.handle_event(event),
+                    }
+                } else {
+                    self.save_system.handle_event(event)
+                }
+            },
             SystemId::UIRenderer => self.ui_renderer.handle_event(event),
         }
+    }
+
+    fn handle_save_game_command(&mut self) -> GameResult<()> {
+        // Extract the save system temporarily to avoid borrow conflicts
+        let save_system = std::mem::replace(&mut self.save_system, SaveSystem::new());
+        let result = save_system.save_game(self);
+        self.save_system = save_system;
+        result
+    }
+
+    fn handle_load_game_command(&mut self) -> GameResult<()> {
+        // Extract the save system temporarily to avoid borrow conflicts
+        let save_system = std::mem::replace(&mut self.save_system, SaveSystem::new());
+        let save_data = save_system.load_game()?;
+        self.save_system = save_system;
+        
+        // Apply the loaded data to the game state
+        self.time_manager.set_tick(save_data.tick)?;
+        self.planet_manager.load_planets(save_data.planets)?;
+        self.ship_manager.load_ships(save_data.ships)?;
+        self.faction_manager.load_factions(save_data.factions)?;
+        
+        Ok(())
     }
     
     pub fn queue_event(&mut self, event: GameEvent) {
@@ -166,6 +200,13 @@ impl GameState {
         let result = ui_renderer.render(self, interpolation);
         self.ui_renderer = ui_renderer;
         result
+    }
+    
+    /// Processes queued events manually - used for testing.
+    /// This allows tests to trigger event processing without running fixed_update.
+    /// Available in both unit tests and integration tests.
+    pub fn process_queued_events_for_test(&mut self) -> GameResult<()> {
+        self.process_queued_events()
     }
 }
 

@@ -1,7 +1,6 @@
 // src/main.rs
 use macroquad::prelude::*;
 use stellar_dominion::core::{GameState, GameResult};
-use stellar_dominion::core::events::{GameEvent, EventBus};
 
 const FIXED_TIMESTEP: f32 = 0.1;
 const MAX_SUBSTEPS: u32 = 10;

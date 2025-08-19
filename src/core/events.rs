@@ -121,4 +121,11 @@ impl EventBus {
     pub fn clear(&mut self) {
         self.queued_events.clear();
     }
+    
+    /// Processes queued events through GameState - used for testing.
+    /// This allows tests to manually trigger event processing.
+    #[cfg(test)]
+    pub fn process_events(&mut self, game_state: &mut crate::core::GameState) -> crate::core::types::GameResult<()> {
+        game_state.process_queued_events_for_test()
+    }
 }
