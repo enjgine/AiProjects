@@ -118,7 +118,8 @@ impl PhysicsEngine {
         // Each planet follows: position = (radius * cos(phase + time/period), radius * sin(phase + time/period))
         
         // Demonstrate orbital calculations for first few planets
-        for planet_id in 0..5.min(self.max_planets) {
+        // TODO: In production, get actual planet count from PlanetManager via events
+        for planet_id in 0..3.min(self.max_planets) {
             let orbital_elements = self.get_demo_orbital_elements(planet_id);
             let position = self.calculate_orbital_position(&orbital_elements, self.current_tick);
             
@@ -250,7 +251,7 @@ impl PhysicsEngine {
         
         // Check for new transfer windows every 25 ticks for better responsiveness
         if self.current_tick % 25 == 0 {
-            let max_planets = 5.min(self.max_planets); // Safety limit
+            let max_planets = 3.min(self.max_planets); // Safety limit - matches our demo planets
             
             for planet_a in 0..max_planets {
                 for planet_b in (planet_a + 1)..max_planets {

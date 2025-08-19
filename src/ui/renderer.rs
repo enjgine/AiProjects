@@ -2,6 +2,7 @@
 use crate::core::{GameResult, GameEvent, EventBus, GameState};
 use crate::core::types::*;
 use crate::core::events::{PlayerCommand, StateChange};
+use crate::ui::{Toolbar, PlanetListMenu, ShipListMenu};
 use macroquad::prelude::*;
 use std::f32::consts::PI;
 use std::collections::HashMap;
@@ -50,21 +51,31 @@ pub struct UIRenderer {
     paused: bool,
     show_orbits: bool,
     ui_context: UIContext,
+    // New Phase 2 components
+    toolbar: Toolbar,
+    planet_list_menu: PlanetListMenu,
+    ship_list_menu: ShipListMenu,
     // Performance optimizations
     cached_planet_positions: HashMap<PlanetId, (Vector2, u64)>, // Position cache with tick
     cached_ship_positions: HashMap<ShipId, (Vector2, u64)>,     // Position cache with tick
     cached_empire_resources: Option<(ResourceBundle, u64)>,     // Resource cache with tick
     cached_starfield: Vec<(f32, f32, f32, f32)>,               // Pre-calculated star positions
+    // 240-tick tracking system
+    resource_window_history: Option<(ResourceBundle, i32, u64)>, // (prev_resources, prev_population, tick)
+    last_window_tick: u64,                                      // Last calculation window update
+    resource_changes: ResourceBundle,                           // Change per 240-tick window
+    population_change: i32,                                     // Population change per 240-tick window
     frame_counter: u64,
     last_screen_size: (f32, f32),
     last_zoom_for_cache: f32,
+    // Cache first valid player entities for keyboard shortcuts
+    first_player_planet: Option<PlanetId>,
+    first_player_ship: Option<ShipId>,
 }
 
-#[derive(Default)]
 struct UIContext {
     planet_panel_open: bool,
     ship_panel_open: bool,
-    #[allow(dead_code)]
     resource_panel_open: bool,
     build_menu_open: bool,
     selected_building_type: Option<BuildingType>,
@@ -78,6 +89,24 @@ struct UIContext {
     mouse_over_ui: bool,
     last_click_time: f32,
     double_click_threshold: f32,
+}
+
+impl Default for UIContext {
+    fn default() -> Self {
+        Self {
+            planet_panel_open: false,
+            ship_panel_open: false,
+            resource_panel_open: true, // Start with resource panel visible
+            build_menu_open: false,
+            selected_building_type: None,
+            worker_allocation_temp: WorkerAllocation::default(),
+            resource_transfer_temp: ResourceBundle::default(),
+            transfer_target: None,
+            mouse_over_ui: false,
+            last_click_time: 0.0,
+            double_click_threshold: DOUBLE_CLICK_THRESHOLD,
+        }
+    }
 }
 
 impl UIRenderer {
@@ -94,13 +123,24 @@ impl UIRenderer {
             paused: false,
             show_orbits: true,
             ui_context,
+            // Initialize new Phase 2 components
+            toolbar: Toolbar::new(),
+            planet_list_menu: PlanetListMenu::new(),
+            ship_list_menu: ShipListMenu::new(),
             cached_planet_positions: HashMap::with_capacity(100), // Pre-allocate for typical game
             cached_ship_positions: HashMap::with_capacity(500),   // Pre-allocate for typical game
             cached_empire_resources: None,
             cached_starfield: Vec::with_capacity(MAX_STARS),
+            // Initialize 240-tick tracking system
+            resource_window_history: None,
+            last_window_tick: 0,
+            resource_changes: ResourceBundle::default(),
+            population_change: 0,
             frame_counter: 0,
             last_screen_size: (DEFAULT_SCREEN_WIDTH, DEFAULT_SCREEN_HEIGHT),
             last_zoom_for_cache: 1.0,
+            first_player_planet: None,
+            first_player_ship: None,
         }
     }
     
@@ -150,7 +190,7 @@ impl UIRenderer {
         self.ui_context.ship_panel_open
     }
     
-    pub fn render(&mut self, _state: &GameState, _interpolation: f32) -> GameResult<()> {
+    pub fn render_with_events(&mut self, _state: &GameState, _interpolation: f32, events: &mut Vec<GameEvent>) -> GameResult<()> {
         // In test environments, macroquad rendering functions aren't available
         #[cfg(not(test))]
         {
@@ -163,6 +203,9 @@ impl UIRenderer {
             
             self.frame_counter = self.frame_counter.wrapping_add(1);
             
+            // Update cached first player entities for keyboard shortcuts
+            self.update_first_player_entities(_state);
+            
             // Periodic cache cleanup for better memory management
             if self.frame_counter % CACHE_CLEANUP_INTERVAL == 0 {
                 self.cleanup_old_cache_entries(_state);
@@ -170,22 +213,367 @@ impl UIRenderer {
             
             clear_background(Color::new(0.05, 0.05, 0.1, 1.0));
             
-            // Render space elements with frustum culling
+            // Render space elements with frustum culling (adjusted for toolbar space)
             self.render_space()?;
             self.render_planets(_state, _interpolation)?;
             self.render_ships(_state, _interpolation)?;
             
-            // Render UI panels
-            self.render_ui_panels(_state)?;
+            // Render UI panels (adjusted positions for toolbar)
+            self.render_ui_panels(_state, events)?;
             
-            // Render HUD last to ensure it's on top
+            // Render HUD (adjusted for toolbar)
             self.render_hud(_state)?;
+            
+            // Render Phase 2 UI components on top
+            self.render_toolbar_and_menus(_state)?;
+            
+            // Update 240-tick tracking before rendering
+            self.update_240_tick_tracking(_state)?;
+            
+            // Render horizontal resource bar beneath toolbar
+            self.render_horizontal_resource_bar(_state)?;
             
             // Reset UI interaction state for next frame
             self.ui_context.mouse_over_ui = false;
         }
         
         Ok(())
+    }
+    
+    fn render_toolbar_and_menus(&mut self, state: &GameState) -> GameResult<()> {
+        #[cfg(not(test))]
+        {
+            // Store the existing state to avoid the temporary EventBus issue
+            let mut toolbar_events = Vec::new();
+            
+            // Handle toolbar rendering and capture state changes manually
+            self.handle_toolbar_interactions(&mut toolbar_events)?;
+            
+            // Sync toolbar state with legacy UI context (bidirectional sync)
+            self.ui_context.resource_panel_open = self.toolbar.resources_panel_open;
+            
+            // Also sync the other direction in case panels were closed by other means
+            self.toolbar.resources_panel_open = self.ui_context.resource_panel_open;
+            
+            // Sync menu open states
+            self.planet_list_menu.open = self.toolbar.planets_menu_open;
+            self.ship_list_menu.open = self.toolbar.ships_menu_open;
+            
+            // Handle list menu interactions and panel opening
+            self.handle_list_menu_interactions(state, &mut toolbar_events)?;
+            
+            // Process captured events
+            for event in toolbar_events {
+                match event {
+                    GameEvent::PlayerCommand(PlayerCommand::SelectPlanet(planet_id)) => {
+                        self.selected_planet = Some(planet_id);
+                        self.ui_context.planet_panel_open = true;
+                    }
+                    GameEvent::PlayerCommand(PlayerCommand::SelectShip(ship_id)) => {
+                        self.selected_ship = Some(ship_id);
+                        self.ui_context.ship_panel_open = true;
+                    }
+                    _ => {} // Handle other events as needed
+                }
+            }
+            
+            // Handle outside clicks to close menus
+            if is_mouse_button_pressed(MouseButton::Left) {
+                let (_mouse_x, mouse_y) = mouse_position();
+                
+                // Check if click is outside toolbar and menus
+                let outside_toolbar = mouse_y > self.toolbar.height;
+                let outside_planet_menu = !self.planet_list_menu.is_mouse_over();
+                let outside_ship_menu = !self.ship_list_menu.is_mouse_over();
+                
+                if outside_toolbar && outside_planet_menu && outside_ship_menu {
+                    self.toolbar.close_all_dropdowns();
+                }
+            }
+            
+            // Update UI interaction tracking for menu hover
+            if self.toolbar.is_mouse_over() || 
+               self.planet_list_menu.is_mouse_over() || 
+               self.ship_list_menu.is_mouse_over() {
+                self.ui_context.mouse_over_ui = true;
+            }
+        }
+        
+        Ok(())
+    }
+    
+    fn handle_toolbar_interactions(&mut self, _events: &mut Vec<GameEvent>) -> GameResult<()> {
+        #[cfg(not(test))]
+        {
+            let screen_w = screen_width();
+            let toolbar_bg = Color::new(0.1, 0.1, 0.15, 0.95);
+            
+            // Toolbar background
+            draw_rectangle(0.0, 0.0, screen_w, self.toolbar.height, toolbar_bg);
+            draw_line(0.0, self.toolbar.height, screen_w, self.toolbar.height, 1.0, Color::new(0.3, 0.3, 0.3, 1.0));
+            
+            let mut button_x = 10.0;
+            let button_width = 80.0;
+            let button_height = 28.0;
+            let button_y = (self.toolbar.height - button_height) / 2.0;
+            let spacing = 85.0;
+            
+            // Planets menu button
+            if self.render_toolbar_button(button_x, button_y, button_width, button_height, 
+                "Planets", self.toolbar.planets_menu_open) {
+                self.toolbar.planets_menu_open = !self.toolbar.planets_menu_open;
+                // Close other dropdowns
+                self.toolbar.ships_menu_open = false;
+                self.toolbar.settings_menu_open = false;
+            }
+            button_x += spacing;
+            
+            // Ships menu button
+            if self.render_toolbar_button(button_x, button_y, button_width, button_height, 
+                "Ships", self.toolbar.ships_menu_open) {
+                self.toolbar.ships_menu_open = !self.toolbar.ships_menu_open;
+                // Close other dropdowns
+                self.toolbar.planets_menu_open = false;
+                self.toolbar.settings_menu_open = false;
+            }
+            button_x += spacing;
+            
+            // Resources panel toggle
+            if self.render_toolbar_button(button_x, button_y, button_width, button_height, 
+                "Resources", self.toolbar.resources_panel_open) {
+                self.toolbar.resources_panel_open = !self.toolbar.resources_panel_open;
+            }
+            button_x += spacing;
+            
+            // Settings menu button
+            if self.render_toolbar_button(button_x, button_y, button_width, button_height, 
+                "Settings", self.toolbar.settings_menu_open) {
+                self.toolbar.settings_menu_open = !self.toolbar.settings_menu_open;
+                // Close other dropdowns
+                self.toolbar.planets_menu_open = false;
+                self.toolbar.ships_menu_open = false;
+            }
+        }
+        
+        Ok(())
+    }
+    
+    fn handle_list_menu_interactions(&mut self, state: &GameState, events: &mut Vec<GameEvent>) -> GameResult<()> {
+        #[cfg(not(test))]
+        {
+            // Render planet list menu and handle interactions
+            if self.planet_list_menu.open {
+                self.render_planet_list_menu(state, events)?;
+            }
+            
+            // Render ship list menu and handle interactions  
+            if self.ship_list_menu.open {
+                self.render_ship_list_menu(state, events)?;
+            }
+        }
+        
+        Ok(())
+    }
+    
+    fn render_planet_list_menu(&mut self, state: &GameState, events: &mut Vec<GameEvent>) -> GameResult<()> {
+        #[cfg(not(test))]
+        {
+            self.planet_list_menu.mouse_over = false;
+            
+            let menu_x = 10.0;
+            let menu_y = self.toolbar.height + 2.0;
+            let menu_height = 300.0f32.min(screen_height() - menu_y - 20.0);
+            
+            // Menu background
+            draw_rectangle(menu_x, menu_y, 220.0, menu_height, Color::new(0.05, 0.05, 0.1, 0.95));
+            draw_rectangle_lines(menu_x, menu_y, 220.0, menu_height, 1.0, Color::new(0.4, 0.4, 0.4, 1.0));
+            
+            // Check if mouse is over menu
+            let (mouse_x, mouse_y) = mouse_position();
+            if mouse_x >= menu_x && mouse_x <= menu_x + 220.0 && 
+               mouse_y >= menu_y && mouse_y <= menu_y + menu_height {
+                self.planet_list_menu.mouse_over = true;
+            }
+            
+            // Header
+            draw_text("Planet List", menu_x + 10.0, menu_y + 20.0, 16.0, WHITE);
+            
+            // Planet list
+            let list_start_y = menu_y + 40.0;
+            let mut item_y = list_start_y;
+            let planets = state.planet_manager.get_all_planets();
+            
+            for planet in planets {
+                if item_y + 32.0 > menu_y + menu_height {
+                    break;
+                }
+                
+                let is_hovered = mouse_x >= menu_x && mouse_x <= menu_x + 220.0 &&
+                               mouse_y >= item_y && mouse_y <= item_y + 32.0;
+                
+                // Item background
+                let bg_color = if is_hovered {
+                    Color::new(0.2, 0.2, 0.3, 0.6)
+                } else {
+                    Color::new(0.1, 0.1, 0.15, 0.4)
+                };
+                
+                draw_rectangle(menu_x + 5.0, item_y, 210.0, 32.0, bg_color);
+                
+                // Planet info
+                let owner_text = match planet.controller {
+                    Some(0) => "Player",
+                    Some(id) => &format!("Faction {}", id)[..],
+                    None => "Neutral",
+                };
+                
+                let planet_text = format!("Planet {} ({})", planet.id, owner_text);
+                draw_text(&planet_text, menu_x + 10.0, item_y + 16.0, 14.0, WHITE);
+                
+                let pop_text = format!("Pop: {} | Min: {}", 
+                    planet.population.total,
+                    planet.resources.current.minerals
+                );
+                draw_text(&pop_text, menu_x + 10.0, item_y + 28.0, 10.0, LIGHTGRAY);
+                
+                // Handle item click - open planet panel
+                if is_hovered && is_mouse_button_pressed(MouseButton::Left) {
+                    self.selected_planet = Some(planet.id);
+                    self.ui_context.planet_panel_open = true;
+                    events.push(GameEvent::PlayerCommand(PlayerCommand::SelectPlanet(planet.id)));
+                    // Close the dropdown after selection
+                    self.toolbar.planets_menu_open = false;
+                }
+                
+                item_y += 34.0;
+            }
+        }
+        
+        Ok(())
+    }
+    
+    fn render_ship_list_menu(&mut self, state: &GameState, events: &mut Vec<GameEvent>) -> GameResult<()> {
+        #[cfg(not(test))]
+        {
+            self.ship_list_menu.mouse_over = false;
+            
+            let menu_x = 95.0;
+            let menu_y = self.toolbar.height + 2.0;
+            let menu_height = 300.0f32.min(screen_height() - menu_y - 20.0);
+            
+            // Menu background
+            draw_rectangle(menu_x, menu_y, 220.0, menu_height, Color::new(0.05, 0.05, 0.1, 0.95));
+            draw_rectangle_lines(menu_x, menu_y, 220.0, menu_height, 1.0, Color::new(0.4, 0.4, 0.4, 1.0));
+            
+            // Check if mouse is over menu
+            let (mouse_x, mouse_y) = mouse_position();
+            if mouse_x >= menu_x && mouse_x <= menu_x + 220.0 && 
+               mouse_y >= menu_y && mouse_y <= menu_y + menu_height {
+                self.ship_list_menu.mouse_over = true;
+            }
+            
+            // Header
+            draw_text("Ship List", menu_x + 10.0, menu_y + 20.0, 16.0, WHITE);
+            
+            // Ship list
+            let list_start_y = menu_y + 40.0;
+            let mut item_y = list_start_y;
+            let ships = state.ship_manager.get_all_ships();
+            
+            for ship in ships {
+                if item_y + 32.0 > menu_y + menu_height {
+                    break;
+                }
+                
+                let is_hovered = mouse_x >= menu_x && mouse_x <= menu_x + 220.0 &&
+                               mouse_y >= item_y && mouse_y <= item_y + 32.0;
+                
+                // Item background
+                let bg_color = if is_hovered {
+                    Color::new(0.2, 0.2, 0.3, 0.6)
+                } else {
+                    Color::new(0.1, 0.1, 0.15, 0.4)
+                };
+                
+                draw_rectangle(menu_x + 5.0, item_y, 210.0, 32.0, bg_color);
+                
+                // Ship info
+                let class_name = match ship.ship_class {
+                    ShipClass::Scout => "Scout",
+                    ShipClass::Transport => "Transport", 
+                    ShipClass::Warship => "Warship",
+                    ShipClass::Colony => "Colony",
+                };
+                
+                let ship_text = format!("{} {} (Player)", class_name, ship.id);
+                draw_text(&ship_text, menu_x + 10.0, item_y + 16.0, 14.0, WHITE);
+                
+                let status_text = if ship.trajectory.is_some() { "Moving" } else { "Idle" };
+                let fuel_text = format!("{} | Fuel: {:.1}", status_text, ship.fuel);
+                draw_text(&fuel_text, menu_x + 10.0, item_y + 28.0, 10.0, LIGHTGRAY);
+                
+                // Handle item click - open ship panel
+                if is_hovered && is_mouse_button_pressed(MouseButton::Left) {
+                    self.selected_ship = Some(ship.id);
+                    self.ui_context.ship_panel_open = true;
+                    events.push(GameEvent::PlayerCommand(PlayerCommand::SelectShip(ship.id)));
+                    // Close the dropdown after selection
+                    self.toolbar.ships_menu_open = false;
+                }
+                
+                item_y += 34.0;
+            }
+        }
+        
+        Ok(())
+    }
+    
+    fn render_toolbar_button(&mut self, x: f32, y: f32, w: f32, h: f32, text: &str, active: bool) -> bool {
+        #[cfg(not(test))]
+        {
+            let (mouse_x, mouse_y) = mouse_position();
+            let hovered = mouse_x >= x && mouse_x <= x + w && mouse_y >= y && mouse_y <= y + h;
+            let clicked = hovered && is_mouse_button_pressed(MouseButton::Left);
+            
+            // Enhanced button styling
+            let color = if active {
+                Color::new(0.4, 0.5, 0.8, 1.0)
+            } else if hovered {
+                Color::new(0.35, 0.35, 0.45, 1.0)
+            } else {
+                Color::new(0.2, 0.2, 0.25, 0.9)
+            };
+            
+            let border_color = if active {
+                Color::new(0.7, 0.8, 1.0, 1.0)
+            } else if hovered {
+                Color::new(0.6, 0.6, 0.8, 1.0)
+            } else {
+                Color::new(0.4, 0.4, 0.4, 0.8)
+            };
+            
+            draw_rectangle(x, y, w, h, color);
+            
+            if hovered || active {
+                let highlight_color = Color::new(1.0, 1.0, 1.0, 0.1);
+                draw_rectangle(x, y, w, 2.0, highlight_color);
+            }
+            
+            draw_rectangle_lines(x, y, w, h, if active { 2.0 } else { 1.0 }, border_color);
+            
+            // Center text in button
+            let text_size = 14.0;
+            let text_dims = measure_text(text, None, text_size as u16, 1.0);
+            draw_text(text, 
+                x + (w - text_dims.width) / 2.0, 
+                y + (h + text_dims.height) / 2.0 - 2.0, 
+                text_size, WHITE);
+            
+            return clicked;
+        }
+        
+        #[cfg(test)]
+        false
     }
     
     pub fn process_input(&mut self, _events: &mut EventBus) -> GameResult<()> {
@@ -289,8 +677,21 @@ impl UIRenderer {
                     _ => {}
                 }
             }
-            GameEvent::PlayerCommand(PlayerCommand::PauseGame(paused)) => {
-                self.paused = *paused;
+            GameEvent::PlayerCommand(cmd) => {
+                match cmd {
+                    PlayerCommand::PauseGame(paused) => {
+                        self.paused = *paused;
+                    }
+                    PlayerCommand::SelectPlanet(planet_id) => {
+                        self.selected_planet = Some(*planet_id);
+                        self.selected_ship = None; // Clear ship selection
+                    }
+                    PlayerCommand::SelectShip(ship_id) => {
+                        self.selected_ship = Some(*ship_id);
+                        self.selected_planet = None; // Clear planet selection
+                    }
+                    _ => {}
+                }
             }
             _ => {}
         }
@@ -476,25 +877,93 @@ impl UIRenderer {
         Ok(())
     }
     
-    fn render_ui_panels(&mut self, state: &GameState) -> GameResult<()> {
+    fn render_ui_panels(&mut self, state: &GameState, events: &mut Vec<GameEvent>) -> GameResult<()> {
         #[cfg(not(test))]
         {
-            // Resource panel (always visible)
-            self.render_resource_panel(state)?;
+            // Resource panel removed - replaced by horizontal resource bar
             
-            // Planet panel
+            // Planet panel with proper close button handling
             if self.ui_context.planet_panel_open && self.selected_planet.is_some() {
                 self.render_planet_panel(state)?;
+                self.handle_panel_close_buttons()?;
             }
             
             // Ship panel
             if self.ui_context.ship_panel_open && self.selected_ship.is_some() {
                 self.render_ship_panel(state)?;
+                self.handle_panel_close_buttons()?;
             }
             
-            // Build menu
+            // Build menu with proper close button handling
             if self.ui_context.build_menu_open && self.selected_planet.is_some() {
-                self.render_build_menu(state)?;
+                self.render_build_menu(state, events)?;
+                self.handle_panel_close_buttons()?;
+            }
+        }
+        
+        Ok(())
+    }
+    
+    fn handle_panel_close_buttons(&mut self) -> GameResult<()> {
+        #[cfg(not(test))]
+        {
+            if !is_mouse_button_pressed(MouseButton::Left) {
+                return Ok(());
+            }
+            
+            let (mouse_x, mouse_y) = mouse_position();
+            
+            // Check planet panel close button
+            if self.ui_context.planet_panel_open {
+                let screen_w = screen_width();
+                let panel_x = screen_w - 350.0;
+                let panel_y = 170.0;
+                let close_x = panel_x + 340.0 - 35.0;
+                let close_y = panel_y + 5.0;
+                let close_w = 30.0;
+                let close_h = 30.0;
+                
+                if mouse_x >= close_x && mouse_x <= close_x + close_w &&
+                   mouse_y >= close_y && mouse_y <= close_y + close_h {
+                    self.ui_context.planet_panel_open = false;
+                    // Also clear selection to prevent auto-reopening
+                    self.selected_planet = None;
+                    return Ok(());
+                }
+            }
+            
+            // Check ship panel close button
+            if self.ui_context.ship_panel_open {
+                let screen_w = screen_width();
+                let panel_x = screen_w - 350.0;
+                let panel_y = 170.0;
+                let close_x = panel_x + 340.0 - 35.0;
+                let close_y = panel_y + 5.0;
+                let close_w = 30.0;
+                let close_h = 30.0;
+                
+                if mouse_x >= close_x && mouse_x <= close_x + close_w &&
+                   mouse_y >= close_y && mouse_y <= close_y + close_h {
+                    self.ui_context.ship_panel_open = false;
+                    return Ok(());
+                }
+            }
+            
+            // Check build menu close button
+            if self.ui_context.build_menu_open {
+                let screen_w = screen_width();
+                let menu_x = screen_w - 250.0;
+                let menu_y = 480.0;
+                let close_x = menu_x + 240.0 - 25.0;
+                let close_y = menu_y + 5.0;
+                let close_w = 20.0;
+                let close_h = 20.0;
+                
+                if mouse_x >= close_x && mouse_x <= close_x + close_w &&
+                   mouse_y >= close_y && mouse_y <= close_y + close_h {
+                    self.ui_context.build_menu_open = false;
+                    return Ok(());
+                }
             }
         }
         
@@ -517,14 +986,21 @@ impl UIRenderer {
             self.camera_position.x, self.camera_position.y, self.zoom_level);
         draw_text(&cam_text, 10.0, 80.0, 16.0, LIGHTGRAY);
         
-        // Controls help
-        let help_y = screen_height() - 120.0;
+        // Enhanced controls help with Phase 2 shortcuts
+        let help_y = screen_height() - 180.0;
         draw_text("Controls:", 10.0, help_y, 16.0, WHITE);
-        draw_text("Space: Pause/Resume", 10.0, help_y + 20.0, 14.0, LIGHTGRAY);
-        draw_text("WASD: Move Camera", 10.0, help_y + 35.0, 14.0, LIGHTGRAY);
-        draw_text("Mouse Wheel: Zoom", 10.0, help_y + 50.0, 14.0, LIGHTGRAY);
-        draw_text("Left Click: Select", 10.0, help_y + 65.0, 14.0, LIGHTGRAY);
-        draw_text("Right Click: Orders", 10.0, help_y + 80.0, 14.0, LIGHTGRAY);
+        draw_text("Space: Pause/Resume", 10.0, help_y + 20.0, 12.0, LIGHTGRAY);
+        draw_text("WASD: Move Camera", 10.0, help_y + 35.0, 12.0, LIGHTGRAY);
+        draw_text("Mouse Wheel: Zoom", 10.0, help_y + 50.0, 12.0, LIGHTGRAY);
+        draw_text("Left Click: Select", 10.0, help_y + 65.0, 12.0, LIGHTGRAY);
+        draw_text("Right Click: Orders", 10.0, help_y + 80.0, 12.0, LIGHTGRAY);
+        
+        // Phase 2 shortcuts
+        draw_text("Phase 2 Menus:", 10.0, help_y + 100.0, 14.0, YELLOW);
+        draw_text("F1: Planet List", 10.0, help_y + 115.0, 12.0, LIGHTGRAY);
+        draw_text("F2: Ship List", 10.0, help_y + 130.0, 12.0, LIGHTGRAY);
+        draw_text("Tab: Cycle Menus", 10.0, help_y + 145.0, 12.0, LIGHTGRAY);
+        draw_text("R: Resources Panel", 10.0, help_y + 160.0, 12.0, LIGHTGRAY);
         }
         
         Ok(())
@@ -541,7 +1017,7 @@ impl UIRenderer {
             }
             
             let panel_x = screen_w - 220.0;
-            let panel_y = 10.0;
+            let panel_y = 50.0; // Below toolbar
             let panel_w = 210.0;
             let panel_h = 150.0;
             
@@ -701,6 +1177,8 @@ impl UIRenderer {
                         
                         if self.render_button(panel_x + 120.0, panel_y + y_offset, 100.0, 25.0, "Close") {
                             self.ui_context.planet_panel_open = false;
+                            // Clear selection to prevent auto-reopening
+                            self.selected_planet = None;
                         }
                     }
                     Err(_) => {
@@ -760,7 +1238,7 @@ impl UIRenderer {
         Ok(())
     }
     
-    fn render_build_menu(&mut self, _state: &GameState) -> GameResult<()> {
+    fn render_build_menu(&mut self, _state: &GameState, events: &mut Vec<GameEvent>) -> GameResult<()> {
         #[cfg(not(test))]
         {
             // Validate screen dimensions
@@ -806,10 +1284,15 @@ impl UIRenderer {
             let mut y_offset = 50.0;
             for (building_type, name, description) in buildings {
                 if self.render_button(panel_x + 10.0, panel_y + y_offset, 150.0, 30.0, name) {
-                    if let Some(_planet_id) = self.selected_planet {
-                        // Store selected building type for later command emission
-                        self.ui_context.selected_building_type = Some(building_type);
-                        // Note: In a complete implementation, this would emit a PlayerCommand::BuildStructure event
+                    if let Some(planet_id) = self.selected_planet {
+                        // Emit BuildStructure event
+                        events.push(GameEvent::PlayerCommand(
+                            PlayerCommand::BuildStructure {
+                                planet: planet_id,
+                                building_type
+                            }
+                        ));
+                        self.ui_context.build_menu_open = false; // Close menu after selection
                     }
                 }
                 
@@ -1023,13 +1506,86 @@ impl UIRenderer {
                 self.show_orbits = !self.show_orbits;
             }
             
-            // UI toggles
-            if is_key_pressed(KeyCode::P) && self.selected_planet.is_some() {
+            // UI toggles with auto-selection logic
+            if is_key_pressed(KeyCode::P) {
+                // Toggle planet panel - will auto-select first planet if none selected
                 self.ui_context.planet_panel_open = !self.ui_context.planet_panel_open;
+                if self.ui_context.planet_panel_open && self.selected_planet.is_none() {
+                    // Use cached first player planet ID
+                    if let Some(planet_id) = self.first_player_planet {
+                        _events.queue_event(GameEvent::PlayerCommand(
+                            PlayerCommand::SelectPlanet(planet_id)
+                        ));
+                    }
+                }
             }
             
-            if is_key_pressed(KeyCode::B) && self.selected_planet.is_some() {
+            if is_key_pressed(KeyCode::B) {
+                // Toggle build menu - will auto-select first planet if none selected
                 self.ui_context.build_menu_open = !self.ui_context.build_menu_open;
+                if self.ui_context.build_menu_open && self.selected_planet.is_none() {
+                    // Use cached first player planet ID
+                    if let Some(planet_id) = self.first_player_planet {
+                        _events.queue_event(GameEvent::PlayerCommand(
+                            PlayerCommand::SelectPlanet(planet_id)
+                        ));
+                    }
+                }
+            }
+            
+            // Ship panel toggle
+            if is_key_pressed(KeyCode::H) {
+                // Toggle ship panel - will auto-select first ship if none selected
+                self.ui_context.ship_panel_open = !self.ui_context.ship_panel_open;
+                if self.ui_context.ship_panel_open && self.selected_ship.is_none() {
+                    // Use cached first player ship ID
+                    if let Some(ship_id) = self.first_player_ship {
+                        _events.queue_event(GameEvent::PlayerCommand(
+                            PlayerCommand::SelectShip(ship_id)
+                        ));
+                    }
+                }
+            }
+            
+            // Resource panel toggle (always available)
+            if is_key_pressed(KeyCode::R) {
+                self.ui_context.resource_panel_open = !self.ui_context.resource_panel_open;
+                self.toolbar.resources_panel_open = self.ui_context.resource_panel_open;
+            }
+            
+            // New Phase 2 keyboard shortcuts for menu system
+            if is_key_pressed(KeyCode::Tab) {
+                // Tab key cycles through toolbar menus
+                if self.toolbar.planets_menu_open {
+                    self.toolbar.planets_menu_open = false;
+                    self.toolbar.ships_menu_open = true;
+                } else if self.toolbar.ships_menu_open {
+                    self.toolbar.ships_menu_open = false;
+                    self.toolbar.settings_menu_open = true;
+                } else if self.toolbar.settings_menu_open {
+                    self.toolbar.settings_menu_open = false;
+                } else {
+                    self.toolbar.planets_menu_open = true;
+                }
+            }
+            
+            // Direct menu shortcuts
+            if is_key_pressed(KeyCode::F1) {
+                // F1 toggles planet list
+                self.toolbar.planets_menu_open = !self.toolbar.planets_menu_open;
+                if self.toolbar.planets_menu_open {
+                    self.toolbar.ships_menu_open = false;
+                    self.toolbar.settings_menu_open = false;
+                }
+            }
+            
+            if is_key_pressed(KeyCode::F2) {
+                // F2 toggles ship list
+                self.toolbar.ships_menu_open = !self.toolbar.ships_menu_open;
+                if self.toolbar.ships_menu_open {
+                    self.toolbar.planets_menu_open = false;
+                    self.toolbar.settings_menu_open = false;
+                }
             }
         }
         
@@ -1361,6 +1917,161 @@ impl UIRenderer {
         Ok(total)
     }
     
+    fn calculate_empire_population(&self, state: &GameState) -> i32 {
+        let planets = state.planet_manager.get_all_planets();
+        let mut total_population = 0i32;
+        
+        const PLAYER_FACTION_ID: FactionId = 0;
+        
+        for planet in planets {
+            if planet.controller == Some(PLAYER_FACTION_ID) {
+                total_population = total_population.saturating_add(planet.population.total);
+            }
+        }
+        
+        total_population
+    }
+    
+    fn update_240_tick_tracking(&mut self, state: &GameState) -> GameResult<()> {
+        // Use shorter window for testing, longer for production
+        const CALCULATION_WINDOW: u64 = if cfg!(debug_assertions) { 30 } else { 240 };
+        
+        let current_tick = state.time_manager.get_current_tick();
+        let current_resources = self.get_cached_empire_resources(state)?;
+        let current_population = self.calculate_empire_population(state);
+        
+        // Initialize tracking on first run
+        if self.resource_window_history.is_none() {
+            self.resource_window_history = Some((current_resources, current_population, current_tick));
+            self.last_window_tick = current_tick;
+            return Ok(());
+        }
+        
+        // Check if we need to update the calculation window
+        if current_tick >= self.last_window_tick + CALCULATION_WINDOW {
+            if let Some((prev_resources, prev_population, _prev_tick)) = self.resource_window_history {
+                // Calculate changes based on the full window
+                self.resource_changes.minerals = current_resources.minerals - prev_resources.minerals;
+                self.resource_changes.food = current_resources.food - prev_resources.food;
+                self.resource_changes.energy = current_resources.energy - prev_resources.energy;
+                self.resource_changes.alloys = current_resources.alloys - prev_resources.alloys;
+                self.resource_changes.components = current_resources.components - prev_resources.components;
+                self.resource_changes.fuel = current_resources.fuel - prev_resources.fuel;
+                self.population_change = current_population - prev_population;
+            }
+            
+            // Update tracking data for next window
+            self.resource_window_history = Some((current_resources, current_population, current_tick));
+            self.last_window_tick = current_tick;
+        }
+        
+        Ok(())
+    }
+    
+    fn render_horizontal_resource_bar(&mut self, state: &GameState) -> GameResult<()> {
+        #[cfg(not(test))]
+        {
+            let screen_w = screen_width();
+            if screen_w <= 0.0 {
+                return Ok(());
+            }
+            
+            let bar_height = 35.0;
+            let bar_y = 40.0; // Just below toolbar
+            let bar_x = 0.0;
+            let bar_w = screen_w;
+            
+            // Background
+            draw_rectangle(bar_x, bar_y, bar_w, bar_height, Color::new(0.1, 0.1, 0.15, 0.95));
+            draw_line(0.0, bar_y + bar_height, screen_w, bar_y + bar_height, 1.0, Color::new(0.3, 0.3, 0.3, 1.0));
+            
+            // Get resources and population
+            let total_resources = self.get_cached_empire_resources(state)?;
+            let total_population = self.calculate_empire_population(state);
+            
+            // Calculate item spacing
+            let item_count = 7.0; // 6 resources + 1 population
+            let available_width = bar_w - 40.0; // Margins
+            let item_width = available_width / item_count;
+            let text_y = bar_y + 22.0;
+            
+            let mut x_offset = 20.0;
+            
+            // Population first with change indicator
+            let pop_text = if total_population >= 1_000_000 {
+                format!("Pop: {:.1}M", total_population as f32 / 1_000_000.0)
+            } else if total_population >= 1_000 {
+                format!("Pop: {:.1}K", total_population as f32 / 1_000.0)
+            } else {
+                format!("Pop: {}", total_population)
+            };
+            draw_text(&pop_text, x_offset, text_y, 14.0, Color::new(0.9, 0.9, 1.0, 1.0));
+            
+            // Population change indicator
+            if self.population_change != 0 {
+                let change_text = if self.population_change > 0 {
+                    format!("+{}", self.population_change)
+                } else {
+                    format!("{}", self.population_change)
+                };
+                let change_color = if self.population_change > 0 { 
+                    Color::new(0.6, 1.0, 0.6, 1.0) 
+                } else { 
+                    Color::new(1.0, 0.6, 0.6, 1.0) 
+                };
+                draw_text(&change_text, x_offset, text_y - 8.0, 10.0, change_color);
+            }
+            x_offset += item_width;
+            
+            // Resources with colors and change tracking
+            let resources_with_changes = [
+                ("Min", total_resources.minerals, self.resource_changes.minerals, Color::new(0.6, 1.0, 0.6, 1.0)), // Light green
+                ("Food", total_resources.food, self.resource_changes.food, Color::new(1.0, 0.8, 0.4, 1.0)),      // Orange
+                ("Nrg", total_resources.energy, self.resource_changes.energy, Color::new(0.4, 0.8, 1.0, 1.0)),     // Blue
+                ("Alloy", total_resources.alloys, self.resource_changes.alloys, Color::new(0.9, 0.9, 0.9, 1.0)),   // Light gray
+                ("Comp", total_resources.components, self.resource_changes.components, Color::new(1.0, 0.6, 1.0, 1.0)), // Purple
+                ("Fuel", total_resources.fuel, self.resource_changes.fuel, Color::new(1.0, 0.6, 0.2, 1.0)),        // Red-orange
+            ];
+            
+            for (name, amount, change, color) in resources_with_changes {
+                let value_text = if amount >= 1_000_000 {
+                    format!("{}: {:.1}M", name, amount as f32 / 1_000_000.0)
+                } else if amount >= 1_000 {
+                    format!("{}: {:.1}K", name, amount as f32 / 1_000.0)
+                } else {
+                    format!("{}: {}", name, amount)
+                };
+                draw_text(&value_text, x_offset, text_y, 14.0, color);
+                
+                // Resource change indicator
+                if change != 0 {
+                    let change_text = if change > 0 {
+                        if change >= 1000 {
+                            format!("+{:.1}k", change as f32 / 1000.0)
+                        } else {
+                            format!("+{}", change)
+                        }
+                    } else {
+                        if change <= -1000 {
+                            format!("{:.1}k", change as f32 / 1000.0)
+                        } else {
+                            format!("{}", change)
+                        }
+                    };
+                    let change_color = if change > 0 { 
+                        Color::new(0.6, 1.0, 0.6, 1.0) 
+                    } else { 
+                        Color::new(1.0, 0.6, 0.6, 1.0) 
+                    };
+                    draw_text(&change_text, x_offset, text_y - 8.0, 10.0, change_color);
+                }
+                x_offset += item_width;
+            }
+        }
+        
+        Ok(())
+    }
+    
     // Performance optimization methods
     fn invalidate_position_cache(&mut self) {
         self.cached_planet_positions.clear();
@@ -1644,6 +2355,33 @@ impl UIRenderer {
         }
         
         Ok(closest_ship)
+    }
+    
+    /// Updates the cached first player planet and ship IDs for keyboard shortcuts
+    fn update_first_player_entities(&mut self, _state: &GameState) {
+        const PLAYER_FACTION_ID: FactionId = 0;
+        
+        // Find first player planet
+        if self.first_player_planet.is_none() {
+            let planets = _state.planet_manager.get_all_planets();
+            for planet in planets {
+                if planet.controller == Some(PLAYER_FACTION_ID) {
+                    self.first_player_planet = Some(planet.id);
+                    break;
+                }
+            }
+        }
+        
+        // Find first player ship  
+        if self.first_player_ship.is_none() {
+            let ships = _state.ship_manager.get_all_ships();
+            for ship in ships {
+                if ship.owner == PLAYER_FACTION_ID {
+                    self.first_player_ship = Some(ship.id);
+                    break;
+                }
+            }
+        }
     }
 }
 

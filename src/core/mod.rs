@@ -46,8 +46,9 @@ impl GameState {
         event_bus.subscribe(SystemId::CombatResolver, events::EventType::SimulationEvent);
         event_bus.subscribe(SystemId::SaveSystem, events::EventType::PlayerCommand);
         event_bus.subscribe(SystemId::UIRenderer, events::EventType::StateChanged);
+        event_bus.subscribe(SystemId::UIRenderer, events::EventType::PlayerCommand);
         
-        Ok(Self {
+        let mut state = Self {
             event_bus,
             planet_manager: PlanetManager::new(),
             ship_manager: ShipManager::new(),
@@ -60,7 +61,12 @@ impl GameState {
             combat_resolver: CombatResolver::new(),
             save_system: SaveSystem::new(),
             ui_renderer: UIRenderer::new(),
-        })
+        };
+        
+        // Initialize with some basic content for testing
+        state.initialize_demo_content()?;
+        
+        Ok(state)
     }
     
     pub fn fixed_update(&mut self, delta: f32) -> GameResult<()> {
@@ -126,7 +132,133 @@ impl GameState {
         Ok(())
     }
     
+    /// Process per-tick simulation updates (resource production, population growth)
+    fn process_tick_events(&mut self, tick: u64) -> GameResult<()> {
+        // Get planet list for processing (clone to avoid borrow conflicts)
+        let planet_ids: Vec<PlanetId> = self.planet_manager.get_all_planet_ids();
+        
+        // Process each planet's resource production and population growth
+        for planet_id in planet_ids {
+            // Check if planet is owned before processing
+            let has_controller = {
+                let planet = self.planet_manager.get_planet(planet_id)?;
+                planet.controller.is_some()
+            };
+            
+            if has_controller {
+                // Calculate net resource production/consumption
+                let net_production = {
+                    let planet = self.planet_manager.get_planet(planet_id)?;
+                    self.resource_system.calculate_planet_production(planet)?
+                };
+                
+                // Split into positive production and negative consumption
+                let mut actual_production = ResourceBundle::default();
+                let mut consumption = ResourceBundle::default();
+                
+                // Separate production from consumption
+                actual_production.minerals = net_production.minerals.max(0);
+                actual_production.food = net_production.food.max(0);
+                actual_production.energy = net_production.energy.max(0);
+                actual_production.alloys = net_production.alloys.max(0);
+                actual_production.components = net_production.components.max(0);
+                actual_production.fuel = net_production.fuel.max(0);
+                
+                consumption.minerals = (-net_production.minerals).max(0);
+                consumption.food = (-net_production.food).max(0);
+                consumption.energy = (-net_production.energy).max(0);
+                consumption.alloys = (-net_production.alloys).max(0);
+                consumption.components = (-net_production.components).max(0);
+                consumption.fuel = (-net_production.fuel).max(0);
+                
+                // Check if we can afford consumption before applying changes
+                let can_afford_consumption = {
+                    let planet = self.planet_manager.get_planet(planet_id)?;
+                    let mut test_resources = planet.resources.current.clone();
+                    test_resources.add(&actual_production).is_ok() && 
+                    test_resources.can_afford(&consumption)
+                };
+                
+                // Calculate how much production can actually be stored before modifying
+                let available_space = {
+                    let planet = self.planet_manager.get_planet(planet_id)?;
+                    planet.resources.available_space()
+                };
+                
+                let mut capped_production = ResourceBundle::default();
+                // Cap production to available storage space
+                capped_production.minerals = actual_production.minerals.min(available_space.minerals);
+                capped_production.food = actual_production.food.min(available_space.food);
+                capped_production.energy = actual_production.energy.min(available_space.energy);
+                capped_production.alloys = actual_production.alloys.min(available_space.alloys);
+                capped_production.components = actual_production.components.min(available_space.components);
+                capped_production.fuel = actual_production.fuel.min(available_space.fuel);
+                
+                // Apply production and consumption safely with capacity limits
+                self.planet_manager.modify_planet(planet_id, |planet| {
+                    // Add the capped production (this should never exceed capacity)
+                    planet.resources.current.add(&capped_production)?;
+                    
+                    // Only subtract consumption if we can afford it
+                    if can_afford_consumption {
+                        planet.resources.current.subtract(&consumption)?;
+                    }
+                    // If we can't afford consumption, buildings might shut down
+                    // but we don't crash the game
+                    
+                    Ok(())
+                })?;
+                
+                // Calculate net change for event tracking (use actual added resources)
+                let mut net_change = capped_production;
+                if can_afford_consumption {
+                    // Subtract consumption from the change we're reporting
+                    net_change.minerals -= consumption.minerals;
+                    net_change.food -= consumption.food;
+                    net_change.energy -= consumption.energy;
+                    net_change.alloys -= consumption.alloys;
+                    net_change.components -= consumption.components;
+                    net_change.fuel -= consumption.fuel;
+                }
+                
+                // Emit ResourcesProduced event for tracking (net change)
+                self.event_bus.queue_event(GameEvent::SimulationEvent(
+                    crate::core::events::SimulationEvent::ResourcesProduced {
+                        planet: planet_id,
+                        resources: net_change
+                    }
+                ));
+                
+                // Process population growth (every 10 ticks for performance)
+                if tick % 10 == 0 {
+                    // Get fresh planet data after resource update
+                    let (population, food_available) = {
+                        let updated_planet = self.planet_manager.get_planet(planet_id)?;
+                        (updated_planet.population.total, updated_planet.resources.current.food)
+                    };
+                    
+                    // Process population growth using existing method
+                    self.population_system.process_planet_growth(
+                        planet_id, 
+                        population, 
+                        food_available,
+                        &mut self.event_bus
+                    )?;
+                }
+            }
+        }
+        
+        Ok(())
+    }
+    
     fn handle_system_event(&mut self, system_id: SystemId, event: &GameEvent) -> GameResult<()> {
+        // Handle tick processing centrally before routing to systems
+        if let GameEvent::SimulationEvent(sim_event) = event {
+            if let crate::core::events::SimulationEvent::TickCompleted(tick) = sim_event {
+                self.process_tick_events(*tick)?;
+            }
+        }
+        
         match system_id {
             SystemId::TimeManager => self.time_manager.handle_event(event),
             SystemId::PlanetManager => self.planet_manager.handle_event(event),
@@ -195,10 +327,19 @@ impl GameState {
     }
     
     pub fn render(&mut self, interpolation: f32) -> GameResult<()> {
+        // Create a temporary collection for events generated during rendering
+        let mut render_events = Vec::new();
+        
         // Temporarily extract ui_renderer to avoid borrow conflicts
         let mut ui_renderer = std::mem::replace(&mut self.ui_renderer, UIRenderer::new());
-        let result = ui_renderer.render(self, interpolation);
+        let result = ui_renderer.render_with_events(self, interpolation, &mut render_events);
         self.ui_renderer = ui_renderer;
+        
+        // Queue any events that were generated during rendering
+        for event in render_events {
+            self.event_bus.queue_event(event);
+        }
+        
         result
     }
     
@@ -207,6 +348,61 @@ impl GameState {
     /// Available in both unit tests and integration tests.
     pub fn process_queued_events_for_test(&mut self) -> GameResult<()> {
         self.process_queued_events()
+    }
+    
+    /// Initialize some demo content for testing and initial gameplay
+    fn initialize_demo_content(&mut self) -> GameResult<()> {
+        // Create a few test planets with basic properties
+        let planet1 = self.planet_manager.create_planet(
+            OrbitalElements {
+                semi_major_axis: 1.0,
+                period: 365.0,
+                phase: 0.0,
+            },
+            Some(0), // Player faction
+        )?;
+        
+        let planet2 = self.planet_manager.create_planet(
+            OrbitalElements {
+                semi_major_axis: 1.5,
+                period: 500.0,
+                phase: 1.57, // 90 degrees offset
+            },
+            None, // Neutral
+        )?;
+        
+        let planet3 = self.planet_manager.create_planet(
+            OrbitalElements {
+                semi_major_axis: 0.7,
+                period: 200.0,
+                phase: 3.14, // 180 degrees offset
+            },
+            None, // Neutral
+        )?;
+        
+        // Add some basic resources to the player planet
+        self.planet_manager.add_resources(planet1, ResourceBundle {
+            minerals: 500,
+            food: 300,
+            energy: 200,
+            alloys: 50,
+            components: 25,
+            fuel: 100,
+        })?;
+        
+        // Add some population to the player planet
+        self.planet_manager.update_population(planet1, 1000)?;
+        
+        // Create a test ship for the player
+        let ship1 = self.ship_manager.create_ship(
+            ShipClass::Scout,
+            Vector2::new(50.0, 50.0), // Starting position
+            0, // Player owner
+        )?;
+        
+        println!("Demo content initialized: {} planets and {} ship created with IDs: planets {}, {}, {} and ship {}", 
+                 3, 1, planet1, planet2, planet3, ship1);
+        Ok(())
     }
 }
 

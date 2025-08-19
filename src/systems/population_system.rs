@@ -251,14 +251,10 @@ impl GameSystem for PopulationSystem {
                         }
                     }
                     
-                    PlayerCommand::TransferResources { from, to, resources: _resources } => {
-                        // Population migration would be handled through specialized migration commands
-                        // For now, just validate that from != to for any potential migration
-                        if from == to {
-                            return Err(GameError::InvalidOperation(
-                                "Cannot transfer resources to the same planet".into()
-                            ));
-                        }
+                    PlayerCommand::TransferResources { from: _from, to: _to, resources: _resources } => {
+                        // TransferResources validation should be handled by the ResourceSystem
+                        // PopulationSystem only tracks population-related events
+                        // This event may be food consumption (same planet) or actual transfers
                     }
                     
                     _ => {}

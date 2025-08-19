@@ -15,6 +15,8 @@
 pub mod renderer;
 pub mod input_handler;
 pub mod panels;
+pub mod toolbar;
+pub mod list_menus;
 
 // Future modules (planned architecture)
 // These will be implemented when needed:
@@ -25,6 +27,8 @@ pub mod panels;
 pub use renderer::UIRenderer;
 pub use input_handler::InputHandler;
 pub use panels::{PlanetPanel, ShipPanel, ResourcePanel, Panel};
+pub use toolbar::Toolbar;
+pub use list_menus::{PlanetListMenu, ShipListMenu};
 
 // Re-export utility modules for external use
 pub use ui_config::validate_ui_config;

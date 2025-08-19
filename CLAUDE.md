@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 Make requests of the user in the form of singular dot points (i.e. "- Install package X", or "- update rust") via claude_recommendations.md
-Read integration_guide.md and structure.md
+Read integration_guide.md and structure.md. Read and adhere to claude_working_memory.md.
 
 ## Project Overview
 
