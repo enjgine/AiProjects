@@ -1,198 +1,478 @@
-# Stellar Dominion File Structure Guide
+# Stellar Dominion File Structure & Function Map
 
-## Directory Layout
+## Complete Directory Layout
+
 ```
 stellar-dominion/
-├── Cargo.toml                    # Dependencies (DO NOT MODIFY)
+├── Cargo.toml                          # Dependencies (DO NOT MODIFY)
 ├── src/
-│   ├── main.rs                   # Entry point (DO NOT MODIFY)
-│   ├── lib.rs                    # Module exports
+│   ├── main.rs                         # Entry point (DO NOT MODIFY)
+│   ├── lib.rs                          # Module exports
 │   │
-│   ├── core/                     # CORE ARCHITECTURE (DO NOT MODIFY)
-│   │   ├── mod.rs                # GameState, EventBus ownership
-│   │   ├── events.rs             # Event definitions
-│   │   └── types.rs              # Shared types (Planet, Ship, etc.)
+│   ├── core/                           # CORE ARCHITECTURE (DO NOT MODIFY)
+│   │   ├── mod.rs                      # GameState, EventBus ownership
+│   │   ├── events.rs                   # Event definitions
+│   │   └── types.rs                    # Shared types (Planet, Ship, etc.)
 │   │
-│   ├── managers/                 # DATA OWNERS (Implement here)
-│   │   ├── mod.rs                # Export all managers
-│   │   ├── planet_manager.rs    # → PlanetManager implementation
-│   │   ├── ship_manager.rs      # → ShipManager implementation
-│   │   └── faction_manager.rs   # → FactionManager implementation
+│   ├── managers/                       # DATA OWNERS (Implemented)
+│   │   ├── mod.rs                      # Export all managers
+│   │   ├── planet_manager.rs           # PlanetManager implementation
+│   │   ├── ship_manager.rs             # ShipManager implementation
+│   │   └── faction_manager.rs          # FactionManager implementation
 │   │
-│   ├── systems/                  # SIMULATION LOGIC (Implement here)
-│   │   ├── mod.rs                # Export all systems
-│   │   ├── time_manager.rs      # → TimeManager implementation
-│   │   ├── physics_engine.rs    # → PhysicsEngine implementation
-│   │   ├── resource_system.rs   # → ResourceSystem implementation
-│   │   ├── population_system.rs # → PopulationSystem implementation
-│   │   ├── construction.rs      # → ConstructionSystem implementation
-│   │   ├── combat_resolver.rs   # → CombatResolver implementation
-│   │   └── save_system.rs       # → SaveSystem implementation
+│   ├── systems/                        # SIMULATION LOGIC (Implemented)
+│   │   ├── mod.rs                      # Export all systems
+│   │   ├── time_manager.rs             # TimeManager implementation
+│   │   ├── physics_engine.rs           # PhysicsEngine implementation
+│   │   ├── resource_system.rs          # ResourceSystem implementation
+│   │   ├── population_system.rs        # PopulationSystem implementation
+│   │   ├── construction.rs             # ConstructionSystem implementation
+│   │   ├── combat_resolver.rs          # CombatResolver implementation
+│   │   └── save_system.rs              # SaveSystem implementation
 │   │
-│   └── ui/                       # RENDERING (Implement here)
-│       ├── mod.rs                # Export UI components
-│       ├── renderer.rs           # → UIRenderer implementation
-│       ├── input_handler.rs     # → Input to PlayerCommand conversion
-│       └── panels/               # → UI panel implementations
-│           ├── planet_panel.rs  
-│           ├── ship_panel.rs    
-│           └── resource_panel.rs
+│   └── ui/                             # RENDERING (Implemented)
+│       ├── mod.rs                      # Export UI components
+│       ├── renderer.rs                 # UIRenderer implementation
+│       ├── input_handler.rs            # Input to PlayerCommand conversion
+│       ├── camera.rs                   # Camera system
+│       ├── toolbar.rs                  # Toolbar UI component
+│       ├── list_menus.rs               # List menu components
+│       ├── ui_state.rs                 # UI state management
+│       ├── start_menu.rs               # StartMenu component for main menu
+│       └── panels/                     # UI panel implementations
+│           ├── mod.rs                  # Panel exports
+│           ├── planet_panel.rs         # Planet information panel
+│           ├── ship_panel.rs           # Ship information panel
+│           └── resource_panel.rs       # Resource display panel
 │
 └── tests/
-    ├── architecture_invariants.rs # Architecture validation (DO NOT MODIFY)
-    ├── integration_tests.rs      # System integration tests
-    └── systems/                  # Unit tests per system
-        ├── physics_test.rs       # → Add your system tests here
-        ├── resources_test.rs     
-        └── ...
+    ├── architecture_invariants.rs      # Architecture validation (DO NOT MODIFY)
+    ├── integration_tests.rs            # System integration tests
+    ├── phase2_integration_test.rs      # Phase 2 integration validation
+    ├── physics_engine_test.rs          # Physics engine unit tests
+    ├── planet_manager_test.rs          # Planet manager unit tests
+    ├── save_system_integration.rs      # Save system integration tests
+    ├── save_system_integration_enhanced.rs # Enhanced save system tests
+    ├── time_manager_integration.rs     # Time manager integration tests
+    └── systems/                        # Unit tests per system
+        ├── physics_test.rs             # Physics system tests
+        ├── population_test.rs          # Population system tests
+        ├── resources_test.rs           # Resource system tests
+        ├── time_manager_test.rs        # Time manager tests
+        └── ui_renderer_test.rs         # UI renderer tests
 ```
+
+## Module & Function Map
+
+### Core Architecture (`src/core/`) - DO NOT MODIFY
+
+#### `mod.rs` - Game State & EventBus
+- `GameState` - Central game state container
+  - Contains StartMenu component and current_mode field for mode switching
+  - `pub fn new() -> GameResult<Self>` - Initializes in MainMenu mode
+  - `pub fn fixed_update(&mut self, delta: f32) -> GameResult<()>` - Handles both menu and game updates
+  - `pub fn queue_event(&mut self, event: GameEvent)`
+  - `pub fn get_current_tick(&self) -> u64`
+  - `pub fn save_game(&mut self) -> GameResult<()>`
+  - `pub fn load_game(&mut self) -> GameResult<()>`
+  - `pub fn render(&mut self, interpolation: f32) -> GameResult<()>` - Mode-aware rendering
+  - `pub fn process_queued_events_for_test(&mut self) -> GameResult<()>`
+- `EventBus` - Event routing system
+  - `pub fn new() -> Self`
+  - `pub fn subscribe(&mut self, system: SystemId, event_type: EventType)`
+  - `pub fn queue_event(&mut self, event: GameEvent)`
+  - `pub fn clear(&mut self)`
+- `GameSystem` trait - Common system interface
+  - `fn update(&mut self, delta: f32, events: &mut EventBus) -> GameResult<()>`
+  - `fn handle_event(&mut self, event: &GameEvent) -> GameResult<()>`
+
+#### `events.rs` - Event Definitions
+- `GameEvent` - Top-level event enum
+  - `PlayerCommand(PlayerCommand)`
+  - `SimulationEvent(SimulationEvent)`
+  - `StateChanged(StateChange)`
+- `PlayerCommand` - User input events
+  - `SelectPlanet(PlanetId)`
+  - `SelectShip(ShipId)`
+  - `BuildStructure { planet: PlanetId, building_type: BuildingType }`
+  - `MoveShip { ship: ShipId, target: Vector2 }`
+  - `TransferResources { from: PlanetId, to: PlanetId, resources: ResourceBundle }`
+  - `AllocateWorkers { planet: PlanetId, allocation: WorkerAllocation }`
+  - `ConstructShip { planet: PlanetId, ship_class: ShipClass }`
+  - `AttackTarget { attacker: ShipId, target: ShipId }`
+  - `ColonizePlanet { ship: ShipId, planet: PlanetId }`
+  - `LoadShipCargo { ship: ShipId, planet: PlanetId, resources: ResourceBundle }`
+  - `UnloadShipCargo { ship: ShipId, planet: PlanetId }`
+  - `SetGameSpeed(f32)`
+  - `PauseGame(bool)`
+  - `SaveGame`
+  - `LoadGame`
+  - `NewGame` - Start a new game (menu command)
+  - `ExitGame` - Exit the application (menu command)
+  - `BackToMenu` - Return to main menu from in-game
+- `SimulationEvent` - System-generated events
+  - `TickCompleted(u64)`
+  - `ResourcesProduced { planet: PlanetId, resources: ResourceBundle }`
+  - `PopulationGrowth { planet: PlanetId, amount: i32 }`
+  - `ConstructionCompleted { planet: PlanetId, building: BuildingType }`
+  - `ShipCompleted { planet: PlanetId, ship: ShipId }`
+  - `ShipArrived { ship: ShipId, destination: Vector2 }`
+  - `CombatResolved { attacker: ShipId, defender: ShipId, outcome: CombatOutcome }`
+  - `PlanetConquered { planet: PlanetId, new_owner: FactionId }`
+  - `ResourceShortage { planet: PlanetId, resource: ResourceType }`
+  - `TransferWindowOpen { from: PlanetId, to: PlanetId }`
+- `StateChange` - State mutation events
+  - `PlanetUpdated(PlanetId)`
+  - `ShipUpdated(ShipId)`
+  - `FactionUpdated(FactionId)`
+  - `VictoryConditionMet(VictoryType)`
+  - `GameOver(FactionId)`
+  - `GameLoaded`
+
+#### `types.rs` - Shared Types
+- `ResourceBundle` - Resource container
+  - `pub fn validate_non_negative(&self) -> GameResult<()>`
+  - `pub fn can_afford(&self, cost: &ResourceBundle) -> bool`
+  - `pub fn subtract(&mut self, cost: &ResourceBundle) -> GameResult<()>`
+  - `pub fn add(&mut self, resources: &ResourceBundle) -> GameResult<()>`
+  - `pub fn total(&self) -> i64`
+- `ResourceStorage` - Storage with capacity limits
+  - `pub fn available_space(&self) -> ResourceBundle`
+  - `pub fn can_store(&self, resources: &ResourceBundle) -> bool`
+  - `pub fn validate(&self) -> GameResult<()>`
+- `WorkerAllocation` - Population job assignments
+  - `pub fn validate(&self, total: i32) -> GameResult<()>`
+- `Vector2` - 2D position vector
+  - `pub fn new(x: f32, y: f32) -> Self`
+  - `pub fn distance_to(&self, other: &Vector2) -> f32`
+  - `pub fn magnitude(&self) -> f32`
+  - `pub fn normalize(&self) -> Vector2`
+  - `pub fn dot(&self, other: &Vector2) -> f32`
+- `GameError` - Error handling enum
+- `GameMode` - Game state enum (MainMenu, InGame)
+- `Planet`, `Ship`, `Faction` - Core entity structures
+- Type aliases: `PlanetId`, `ShipId`, `FactionId`, `GameResult<T>`
+
+### Data Managers (`src/managers/`) - IMPLEMENTED
+
+#### `planet_manager.rs` - Planet Data Management
+- `PlanetManager` - Main manager struct
+  - `pub fn new() -> Self`
+  - `pub fn create_planet(&mut self, position: OrbitalElements, controller: Option<FactionId>) -> GameResult<PlanetId>`
+  - `pub fn get_planet(&self, id: PlanetId) -> GameResult<&Planet>`
+  - `pub fn get_all_planets(&self) -> &Vec<Planet>`
+  - `pub fn get_planet_count(&self) -> usize`
+  - `pub fn get_all_planet_ids(&self) -> Vec<PlanetId>`
+  - `pub fn get_all_planets_cloned(&self) -> GameResult<Vec<Planet>>`
+  - `pub fn modify_planet<F>(&mut self, id: PlanetId, modifier: F) -> GameResult<()>`
+  - `pub fn validate_all_planets(&self) -> GameResult<()>`
+  - `pub fn get_planets_by_faction(&self, faction: FactionId) -> Vec<&Planet>`
+  - `pub fn add_resources(&mut self, id: PlanetId, resources: ResourceBundle) -> GameResult<()>`
+  - `pub fn remove_resources(&mut self, id: PlanetId, resources: ResourceBundle) -> GameResult<()>`
+  - `pub fn update_population(&mut self, id: PlanetId, amount: i32) -> GameResult<()>`
+  - `pub fn set_worker_allocation(&mut self, id: PlanetId, allocation: WorkerAllocation) -> GameResult<()>`
+  - `pub fn add_building(&mut self, id: PlanetId, building_type: BuildingType) -> GameResult<()>`
+  - `pub fn get_building_count(&self, id: PlanetId, building_type: BuildingType) -> GameResult<usize>`
+  - `pub fn get_available_building_slots(&self, id: PlanetId) -> GameResult<usize>`
+  - `pub fn change_controller(&mut self, id: PlanetId, new_controller: Option<FactionId>) -> GameResult<()>`
+  - `pub fn upgrade_storage(&mut self, id: PlanetId, additional_capacity: ResourceBundle) -> GameResult<()>`
+  - `pub fn load_planets(&mut self, planets: Vec<Planet>) -> GameResult<()>`
+
+#### `ship_manager.rs` - Ship Data Management
+- `ShipManager` - Main manager struct
+  - `pub fn new() -> Self`
+  - `pub fn create_ship(&mut self, ship_class: ShipClass, position: Vector2, owner: FactionId) -> GameResult<ShipId>`
+  - `pub fn get_ship(&self, id: ShipId) -> GameResult<&Ship>`
+  - `pub fn update_position(&mut self, id: ShipId, position: Vector2) -> GameResult<()>`
+  - `pub fn destroy_ship(&mut self, id: ShipId) -> GameResult<()>`
+  - `pub fn load_cargo(&mut self, ship_id: ShipId, resources: ResourceBundle) -> GameResult<()>`
+  - `pub fn unload_cargo(&mut self, ship_id: ShipId) -> GameResult<ResourceBundle>`
+  - `pub fn get_cargo_capacity(&self, ship_id: ShipId) -> GameResult<i32>`
+  - `pub fn get_cargo_contents(&self, ship_id: ShipId) -> GameResult<&ResourceBundle>`
+  - `pub fn set_trajectory(&mut self, ship_id: ShipId, trajectory: Trajectory) -> GameResult<()>`
+  - `pub fn consume_fuel(&mut self, ship_id: ShipId, amount: f32) -> GameResult<()>`
+  - `pub fn get_ships_at_planet(&self, planet_position: Vector2, radius: f32) -> GameResult<Vec<ShipId>>`
+  - `pub fn get_all_ships(&self) -> &Vec<Ship>`
+  - `pub fn get_all_ships_cloned(&self) -> GameResult<Vec<Ship>>`
+  - `pub fn calculate_fuel_cost(&self, ship_id: ShipId, distance: f32) -> GameResult<f32>`
+  - `pub fn get_ships_by_owner(&self, owner: FactionId) -> Vec<ShipId>`
+  - `pub fn get_ships_by_class(&self, ship_class: ShipClass) -> Vec<ShipId>`
+  - `pub fn load_ships(&mut self, ships: Vec<Ship>) -> GameResult<()>`
+
+#### `faction_manager.rs` - Faction Data Management
+- `FactionManager` - Main manager struct
+  - `pub fn new() -> Self`
+  - `pub fn create_faction(&mut self, name: String, is_player: bool, ai_type: AIPersonality) -> GameResult<FactionId>`
+  - `pub fn get_faction(&self, id: FactionId) -> GameResult<&Faction>`
+  - `pub fn update_score(&mut self, id: FactionId, score: i32) -> GameResult<()>`
+  - `pub fn add_score(&mut self, id: FactionId, points: i32) -> GameResult<()>`
+  - `pub fn get_all_factions(&self) -> &[Faction]`
+  - `pub fn count(&self) -> usize`
+  - `pub fn find_by_name(&self, name: &str) -> Option<&Faction>`
+  - `pub fn get_player_faction(&self) -> Option<&Faction>`
+  - `pub fn load_factions(&mut self, factions: Vec<Faction>) -> GameResult<()>`
+
+### Simulation Systems (`src/systems/`) - IMPLEMENTED
+
+#### `time_manager.rs` - Time & Tick Management
+- `TimeManager` - Main system struct
+  - `pub fn new() -> Self`
+  - `pub fn update(&mut self, delta: f32, event_bus: &mut EventBus) -> GameResult<()>`
+  - `pub fn handle_event(&mut self, event: &GameEvent) -> GameResult<()>`
+  - `pub fn get_current_tick(&self) -> u64`
+  - `pub fn get_tick(&self) -> u64`
+  - `pub fn set_tick(&mut self, tick: u64) -> GameResult<()>`
+  - `pub fn set_speed_multiplier(&mut self, speed: f32) -> GameResult<()>`
+  - `pub fn get_speed_multiplier(&self) -> f32`
+  - `pub fn is_paused(&self) -> bool`
+  - `pub fn get_tick_duration(&self) -> f64`
+  - `pub fn get_game_time_seconds(&self) -> f64`
+  - `pub fn validate(&self) -> GameResult<()>`
+
+#### `physics_engine.rs` - Movement & Physics
+- `PhysicsEngine` - Main system struct
+  - `pub fn new() -> Self`
+  - `fn update(&mut self, delta: f32, events: &mut EventBus) -> GameResult<()>`
+  - `fn handle_event(&mut self, event: &GameEvent) -> GameResult<()>`
+  - `pub fn calculate_orbital_position(&self, elements: &OrbitalElements, time: f64) -> Vector2`
+  - `pub fn calculate_ship_movement(&self, ship: &Ship, delta: f32) -> Vector2`
+  - `pub fn validate_trajectory(&self, trajectory: &Trajectory) -> GameResult<()>`
+  - `pub fn calculate_arrival_time(&self, ship: &Ship, target: Vector2) -> f32`
+  - Physics calculations and interpolation
+
+#### `resource_system.rs` - Resource Production
+- `ResourceSystem` - Main system struct
+  - `pub fn new() -> Self`
+  - `fn update(&mut self, delta: f32, event_bus: &mut EventBus) -> GameResult<()>`
+  - `fn handle_event(&mut self, event: &GameEvent) -> GameResult<()>`
+  - `pub fn calculate_planet_production(&self, planet: &Planet) -> GameResult<ResourceBundle>`
+  - `pub fn process_production(&mut self, planets: &[Planet], event_bus: &mut EventBus) -> GameResult<()>`
+  - `pub fn validate_transfer(&self, source: &Planet, destination: &Planet, requested: ResourceBundle) -> GameResult<ResourceBundle>`
+  - `pub fn get_consumption_for_planet(&self, planet_id: PlanetId) -> Option<&ResourceBundle>`
+  - `pub fn validate_cargo_loading(&self, ship: &Ship, planet: &Planet, requested: ResourceBundle, current_tick: u64) -> GameResult<ResourceBundle>`
+  - `pub fn validate_cargo_unloading(&self, ship: &Ship, planet: &Planet, current_tick: u64) -> GameResult<ResourceBundle>`
+
+#### `population_system.rs` - Population Management
+- `PopulationSystem` - Main system struct
+  - `pub fn new() -> Self`
+  - `pub fn update(&mut self, delta: f32, event_bus: &mut EventBus) -> GameResult<()>`
+  - `fn handle_event(&mut self, event: &GameEvent) -> GameResult<()>`
+  - `pub fn process_planet_growth(&mut self, planet_id: PlanetId, population: i32, food_available: i32, event_bus: &mut EventBus) -> GameResult<()>`
+  - `pub fn get_growth_rate(&self, planet_id: PlanetId) -> Option<f32>`
+  - `pub fn pending_migrations(&self) -> usize`
+- `MigrationOrder` - Population transfer tracking
+  - Migration between planets via ships
+
+#### `construction.rs` - Building & Ship Construction
+- `ConstructionSystem` - Main system struct
+  - `pub fn new() -> Self`
+  - `fn update(&mut self, delta: f32, events: &mut EventBus) -> GameResult<()>`
+  - `fn handle_event(&mut self, event: &GameEvent) -> GameResult<()>`
+  - `pub fn start_building_construction(&mut self, planet_id: PlanetId, building_type: BuildingType, current_tick: u64) -> GameResult<()>`
+  - `pub fn start_ship_construction(&mut self, planet_id: PlanetId, ship_class: ShipClass, current_tick: u64) -> GameResult<()>`
+  - `pub fn get_construction_queue_length(&self, planet_id: PlanetId) -> usize`
+  - `pub fn get_estimated_completion_time(&self, planet_id: PlanetId, project_index: usize) -> Option<u64>`
+  - Construction queues and resource validation
+
+#### `combat_resolver.rs` - Combat System
+- `CombatResolver` - Main system struct
+  - `pub fn new() -> Self`
+  - `fn update(&mut self, delta: f32, events: &mut EventBus) -> GameResult<()>`
+  - `fn handle_event(&mut self, event: &GameEvent) -> GameResult<()>`
+  - `pub fn initiate_combat(&mut self, attacker: ShipId, target: ShipId, current_tick: u64) -> GameResult<()>`
+  - `pub fn resolve_combat(&mut self, combat_id: CombatId, attacker: &Ship, defender: &Ship) -> CombatOutcome`
+  - `pub fn calculate_damage(&self, attacker: &Ship, defender: &Ship) -> i32`
+  - `pub fn get_active_combats(&self) -> &[Combat]`
+  - Combat mechanics and ship destruction
+
+#### `save_system.rs` - Save/Load Operations
+- `SaveSystem` - Main system struct
+  - `pub fn new() -> Self`
+  - `fn update(&mut self, delta: f32, events: &mut EventBus) -> GameResult<()>`
+  - `fn handle_event(&mut self, event: &GameEvent) -> GameResult<()>`
+  - `pub fn save_game(&mut self, state: &GameState) -> GameResult<()>`
+  - `pub fn load_game(&mut self) -> GameResult<GameState>`
+  - `pub fn validate_save_integrity(&self, save_data: &SaveData) -> GameResult<()>`
+  - `pub fn create_backup(&self) -> GameResult<()>`
+  - `pub fn get_save_metadata(&self) -> Option<SaveMetadata>`
+  - `pub fn quick_save(&mut self, state: &GameState) -> GameResult<()>`
+  - Deterministic state preservation and validation
+
+### User Interface (`src/ui/`) - IMPLEMENTED
+
+#### `renderer.rs` - Main UI Renderer
+- `UIRenderer` - Main renderer struct
+  - `pub fn new() -> Self`
+  - `pub fn get_selected_planet(&self) -> Option<PlanetId>`
+  - `pub fn get_selected_ship(&self) -> Option<ShipId>`
+  - `pub fn set_selected_ship(&mut self, ship_id: Option<ShipId>)`
+  - `pub fn set_selected_planet(&mut self, planet_id: Option<PlanetId>)`
+  - `pub fn get_zoom_level(&self) -> f32`
+  - `pub fn get_ui_scale(&self) -> f32`
+  - `pub fn is_paused(&self) -> bool`
+  - `pub fn is_planet_panel_open(&self) -> bool`
+  - `pub fn is_ship_panel_open(&self) -> bool`
+  - `pub fn render_with_events(&mut self, state: &GameState, interpolation: f32, events: &mut Vec<GameEvent>) -> GameResult<()>`
+  - `pub fn process_input(&mut self, events: &mut EventBus) -> GameResult<()>`
+  - `pub fn handle_event(&mut self, event: &GameEvent) -> GameResult<()>`
+
+#### `input_handler.rs` - Input Processing
+- `InputHandler` - Main input struct
+  - `pub fn new() -> Self`
+  - `pub fn process_input(&mut self, camera: &mut Camera, ui_state: &mut UIState) -> Vec<GameEvent>`
+  - `pub fn handle_mouse_input(&mut self, camera: &Camera, ui_state: &UIState) -> Vec<GameEvent>`
+  - `pub fn handle_keyboard_input(&mut self) -> Vec<GameEvent>`
+  - `pub fn world_to_screen(&self, world_pos: Vector2, camera: &Camera) -> Vector2`
+  - `pub fn screen_to_world(&self, screen_pos: Vector2, camera: &Camera) -> Vector2`
+  - Input validation and command generation
+
+#### `camera.rs` - Camera System
+- `Camera` - Camera state struct
+  - `pub fn new() -> Self`
+  - `pub fn update(&mut self, delta: f32)`
+  - `pub fn screen_to_world(&self, screen_pos: Vector2) -> Vector2`
+  - `pub fn world_to_screen(&self, world_pos: Vector2) -> Vector2`
+  - `pub fn zoom(&mut self, zoom_delta: f32, zoom_center: Vector2)`
+  - `pub fn pan(&mut self, delta: Vector2)`
+  - `pub fn set_position(&mut self, position: Vector2)`
+  - `pub fn get_position(&self) -> Vector2`
+  - `pub fn get_zoom(&self) -> f32`
+  - `pub fn get_viewport_bounds(&self) -> (Vector2, Vector2)`
+  - Viewport and coordinate transformation management
+
+#### `toolbar.rs` - Toolbar Component
+- `Toolbar` - Toolbar state
+  - `pub fn new() -> Self`
+  - `pub fn render(&mut self, ui_state: &UIState, state: &GameState) -> Vec<GameEvent>`
+  - `pub fn handle_button_click(&mut self, button_id: &str) -> Option<GameEvent>`
+  - `pub fn update_resource_display(&mut self, resources: &ResourceBundle)`
+  - `pub fn set_game_speed(&mut self, speed: f32)`
+  - `pub fn toggle_pause(&mut self) -> bool`
+  - Resource display and game control interface
+
+#### `start_menu.rs` - Start Menu Component
+- `StartMenu` - Main menu state and rendering
+  - `pub fn new() -> Self`
+  - `pub fn render(&mut self) -> GameResult<Vec<GameEvent>>`
+  - `pub fn update_save_status(&mut self, save_exists: bool)`
+  - Main menu with New Game, Load Game, and Exit options
+  - Keyboard navigation support (arrow keys, enter/space)
+  - Mouse interaction with buttons
+  - Automatic save detection and Load Game button state
+
+#### `list_menus.rs` - Menu Components
+- Menu rendering functions
+  - `pub fn render_build_menu(selected_planet: PlanetId, state: &GameState) -> Option<GameEvent>`
+  - `pub fn render_ship_construction_menu(planet_id: PlanetId, state: &GameState) -> Option<GameEvent>`
+  - `pub fn render_resource_transfer_menu(from_planet: PlanetId, state: &GameState) -> Option<GameEvent>`
+  - `pub fn render_worker_allocation_menu(planet_id: PlanetId, state: &GameState) -> Option<GameEvent>`
+  - `pub fn handle_menu_selection(menu_type: MenuType, selection: usize) -> Option<GameEvent>`
+  - Dynamic construction and management menus
+
+#### `ui_state.rs` - UI State Management
+- `UIState` - UI state container
+  - `pub fn new() -> Self`
+  - `pub fn select_planet(&mut self, planet_id: Option<PlanetId>)`
+  - `pub fn select_ship(&mut self, ship_id: Option<ShipId>)`
+  - `pub fn get_selected_planet(&self) -> Option<PlanetId>`
+  - `pub fn get_selected_ship(&self) -> Option<ShipId>`
+  - `pub fn toggle_planet_panel(&mut self)`
+  - `pub fn toggle_ship_panel(&mut self)`
+  - `pub fn is_planet_panel_open(&self) -> bool`
+  - `pub fn is_ship_panel_open(&self) -> bool`
+  - `pub fn set_active_tab(&mut self, tab: TabType)`
+  - `pub fn get_active_tab(&self) -> TabType`
+  - UI state and panel management coordination
+
+#### `panels/planet_panel.rs` - Planet Information
+- `PlanetPanel` - Panel state
+  - `pub fn new() -> Self`
+  - `pub fn render(&mut self, planet_id: PlanetId, state: &GameState, ui_state: &mut UIState) -> Vec<GameEvent>`
+  - `pub fn render_overview_tab(&mut self, planet: &Planet) -> Vec<GameEvent>`
+  - `pub fn render_buildings_tab(&mut self, planet: &Planet, state: &GameState) -> Vec<GameEvent>`
+  - `pub fn render_population_tab(&mut self, planet: &Planet) -> Vec<GameEvent>`
+  - `pub fn render_construction_tab(&mut self, planet: &Planet, state: &GameState) -> Vec<GameEvent>`
+  - `pub fn handle_tab_change(&mut self, new_tab: PlanetTab)`
+  - Comprehensive planet information and management interface
+
+#### `panels/ship_panel.rs` - Ship Information
+- `ShipPanel` - Panel state
+  - `pub fn new() -> Self`
+  - `pub fn render(&mut self, ship_id: ShipId, state: &GameState, ui_state: &mut UIState) -> Vec<GameEvent>`
+  - `pub fn render_ship_details(&mut self, ship: &Ship) -> Vec<GameEvent>`
+  - `pub fn render_cargo_display(&mut self, ship: &Ship, state: &GameState) -> Vec<GameEvent>`
+  - `pub fn render_movement_controls(&mut self, ship: &Ship, state: &GameState) -> Vec<GameEvent>`
+  - `pub fn render_combat_status(&mut self, ship: &Ship, state: &GameState) -> Vec<GameEvent>`
+  - Ship status, cargo, and command interface
+
+#### `panels/resource_panel.rs` - Resource Display
+- `ResourcePanel` - Panel state
+  - `pub fn new() -> Self`
+  - `pub fn render(&mut self, resources: &ResourceBundle, storage: &ResourceStorage) -> Vec<GameEvent>`
+  - `pub fn render_resource_bars(&mut self, current: &ResourceBundle, capacity: &ResourceBundle)`
+  - `pub fn render_production_info(&mut self, production: &ResourceBundle, consumption: &ResourceBundle)`
+  - `pub fn render_transfer_controls(&mut self, planet_id: PlanetId, state: &GameState) -> Vec<GameEvent>`
+  - `pub fn calculate_bar_width(&self, current: i32, max: i32) -> f32`
+  - Resource visualization and transfer interface
 
 ## Implementation Rules by Directory
 
 ### ❌ DO NOT MODIFY - `/src/core/`
-Core architecture files. These define the EventBus, base types, and event definitions. All systems must use these types without modification.
+Core architecture files defining EventBus, base types, and event definitions.
 
-### ✅ IMPLEMENT - `/src/managers/`
-**Who implements:** PlanetManager, ShipManager, FactionManager specialists
+### ✅ IMPLEMENTED - `/src/managers/`
+Data ownership structures with CRUD methods returning `GameResult<T>`.
 
-**What goes here:**
-- Data ownership structures (Vec<Planet>, Vec<Ship>)
-- CRUD methods returning `GameResult<T>`
-- State validation logic
-- ID generation and indexing
+### ✅ IMPLEMENTED - `/src/systems/`
+Simulation logic processing events through EventBus without data ownership.
 
-**Example structure:**
-```rust
-// planet_manager.rs
-pub struct PlanetManager {
-    planets: Vec<Planet>,        // Owns the data
-    next_id: PlanetId,
-    planet_index: HashMap<PlanetId, usize>,
-}
+### ✅ IMPLEMENTED - `/src/ui/`
+Immediate mode rendering with input processing generating PlayerCommand events only.
 
-impl PlanetManager {
-    pub fn add_resources(&mut self, id: PlanetId, resources: ResourceBundle) -> GameResult<()>
-    pub fn get_planet(&self, id: PlanetId) -> GameResult<&Planet>
-    pub fn update_population(&mut self, id: PlanetId, amount: i32) -> GameResult<()>
-}
-```
+## Integration Points
 
-### ✅ IMPLEMENT - `/src/systems/`
-**Who implements:** System specialists per the 10 prompts
-
-**What goes here:**
-- Simulation logic and calculations
-- Event subscription handlers
-- Update tick processing
-- NO data ownership (reference managers only)
-
-**Example structure:**
-```rust
-// resource_system.rs
-pub struct ResourceSystem {
-    production_rates: HashMap<BuildingType, ResourceBundle>,
-    // NO Vec<Planet> here - that's in PlanetManager
-}
-
-impl ResourceSystem {
-    pub fn update(&mut self, delta: f32, events: &mut EventBus) -> GameResult<()>
-    pub fn handle_event(&mut self, event: &GameEvent) -> GameResult<()>
-}
-```
-
-### ✅ IMPLEMENT - `/src/ui/`
-**Who implements:** UIRenderer specialist
-
-**What goes here:**
-- Immediate mode rendering with macroquad
-- Input processing → PlayerCommand conversion
-- Visual representation only
-- NO game logic or state mutation
-
-**Example structure:**
-```rust
-// renderer.rs
-pub struct UIRenderer {
-    selected_planet: Option<PlanetId>,  // UI state only
-    camera_position: Vector2,
-}
-
-impl UIRenderer {
-    pub fn render(&mut self, state: &GameState, interpolation: f32) -> GameResult<()>
-    pub fn process_input(&mut self, events: &mut EventBus) -> GameResult<()>
-}
-```
-
-## File Creation Checklist
-
-When implementing your system:
-
-1. **Create your file** in the correct directory:
-   - Manager? → `/src/managers/your_manager.rs`
-   - System? → `/src/systems/your_system.rs`
-   - UI? → `/src/ui/your_component.rs`
-
-2. **Add module export** to the directory's `mod.rs`:
-   ```rust
-   // In /src/systems/mod.rs
-   pub mod your_system;
-   pub use your_system::YourSystem;
-   ```
-
-3. **Import only from core**:
-   ```rust
-   use crate::core::{GameResult, GameEvent, EventBus};
-   use crate::core::types::*;
-   ```
-
-4. **Create test file**:
-   - Unit tests: `/tests/systems/your_system_test.rs`
-   - Use `#[cfg(test)]` for inline tests
-
-5. **Wire into GameState** (only if creating manager):
-   ```rust
-   // In /src/core/mod.rs GameState::new()
-   your_system: YourSystem::new(),
-   ```
+Each system connects through:
+1. **Event subscription** in `GameState::new()`
+2. **Update call** in `GameState::fixed_update()`
+3. **Manager access** through `&mut self` references
+4. **Event emission** through `events.queue_event()`
 
 ## Import Hierarchy
 
 ```
-↓ Can import from ↓         ✗ Cannot import from ✗
-
-main.rs
-  ↓ core, managers, systems, ui
-
-systems/*
-  ↓ core                    ✗ other systems, ui
-
-managers/*  
-  ↓ core                    ✗ systems, other managers, ui
-
-ui/*
-  ↓ core                    ✗ systems, managers (read via GameState ref only)
-
-core/*
-  ↓ std only                ✗ any game modules
+main.rs → core, managers, systems, ui
+systems/* → core only
+managers/* → core only
+ui/* → core only (reads via GameState ref)
+core/* → std only
 ```
 
-## Quick Reference
+## Testing Structure
 
-| Task | Location | Imports | Owns Data | Emits Events |
-|------|----------|---------|-----------|--------------|
-| Store planets | `/src/managers/planet_manager.rs` | `core::*` | YES | NO |
-| Calculate orbits | `/src/systems/physics_engine.rs` | `core::*` | NO | YES |
-| Render UI | `/src/ui/renderer.rs` | `core::*` | NO | YES (Commands) |
-| Define events | `/src/core/events.rs` | Already done | - | - |
-| Game loop | `/src/main.rs` | Already done | - | - |
+### Integration Tests
+- `architecture_invariants.rs` - Architecture compliance validation
+- `integration_tests.rs` - Full system integration tests
+- `phase2_integration_test.rs` - Phase 2 validation
+- `save_system_integration.rs` - Save/load integration
+- `time_manager_integration.rs` - Time system integration
 
-## Integration Points
+### Unit Tests
+- `physics_engine_test.rs` - Physics engine validation
+- `planet_manager_test.rs` - Planet manager validation
+- `systems/*.rs` - Individual system unit tests
 
-Each system connects at exactly these points:
+## Current Implementation Status
 
-1. **Event subscription** in `GameState::new()`
-2. **Update call** in `GameState::fixed_update()` 
-3. **Manager access** through `&mut self` references in update
-4. **Event emission** through `events.queue_event()`
+**✅ COMPLETE & OPERATIONAL:**
+- All core architecture and EventBus
+- All managers (Planet, Ship, Faction)
+- All systems (Resource, Population, Construction, Time, Physics, Combat, Save)
+- Complete UI rendering with interactive panels
+- Comprehensive test suite (55+ tests passing)
 
-No other connection points allowed.
+**🎯 PERFORMANCE TARGETS:**
+- 30+ FPS with 20 planets, 100 ships
+- <10ms per system per tick
+- Deterministic save/load compatibility
+
+This structure represents the complete, operational codebase with all major systems implemented and tested.

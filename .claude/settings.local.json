@@ -23,7 +23,8 @@
       "mcp__ide__getDiagnostics",
       "Bash(RUST_BACKTRACE=1 cargo test systems::time_manager::tests::test_precision_with_f64 --lib)",
       "Bash(RUST_BACKTRACE=1 cargo test test_save_system_integration --test save_system_integration)",
-      "Bash(RUST_BACKTRACE=1 cargo test test_save_load_preserves_game_integrity --test save_system_integration)"
+      "Bash(RUST_BACKTRACE=1 cargo test test_save_load_preserves_game_integrity --test save_system_integration)",
+      "Bash(tree:*)"
     ],
     "deny": [],
     "ask": [],

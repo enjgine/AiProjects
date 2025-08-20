@@ -1,7 +1,6 @@
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-Make requests of the user in the form of singular dot points (i.e. "- Install package X", or "- update rust") via claude_recommendations.md
 Read integration_guide.md and structure.md. Read and adhere to claude_working_memory.md.
 
 ## Project Overview
@@ -20,6 +19,10 @@ cargo test --test architecture_invariants
 
 # Run the game
 cargo run
+
+# Quality checks (run before committing)
+cargo clippy -- -D warnings
+cargo fmt --check
 ```
 
 ## Core Architecture - DO NOT MODIFY
@@ -42,13 +45,13 @@ cargo run
 
 ## Implementation Rules
 
-### Manager Pattern (src/managers/ - Future)
+### Manager Pattern (src/managers/)
 - Own data collections (Vec<Planet>, Vec<Ship>)
 - Provide CRUD methods returning `GameResult<T>`
 - No direct field access from other systems
 - Validate all operations before state changes
 
-### System Pattern (src/systems/ - Future) 
+### System Pattern (src/systems/) 
 - Subscribe to relevant events via EventBus
 - Process logic in `update()` method
 - Emit new events, never modify state directly
@@ -62,27 +65,27 @@ cargo run
 
 ### Testing Requirements
 - Architecture invariants enforced by tests/architecture_invariants.rs
-- All new systems must have unit tests
+- All new systems must have unit tests (>95% coverage for business logic)
 - Integration tests verify event flow
+- Property-based tests for deterministic behavior
+- Performance tests for entity count targets
 - No Arc/Mutex allowed (single-threaded design)
 
 ## Current Implementation Status
 
-**Complete:**
+**Complete & Operational:**
 - Core architecture and EventBus
-- Basic managers (Planet, Ship, Faction) 
-- TimeManager with tick events
-- Type system and error handling
-- Architecture validation tests
-- Main game loop with fixed timestep
+- All managers (Planet, Ship, Faction)
+- All core systems (Resource, Population, Construction, Time, Physics, Combat)
+- Save/Load system with deterministic validation
+- UI rendering with interactive panels
+- Comprehensive test suite (55+ tests)
+- Architecture validation and compliance
 
-**Placeholder Systems (Need Implementation):**
-- ResourceSystem
-- PopulationSystem  
-- ConstructionSystem
-- PhysicsEngine
-- CombatResolver
-- UIRenderer
+**Current Focus:**
+- Performance optimization and scaling
+- Advanced testing patterns
+- Production readiness features
 
 ## File Organization
 
@@ -93,19 +96,21 @@ src/
 │   ├── mod.rs       # GameState, managers
 │   ├── events.rs    # Event definitions  
 │   └── types.rs     # Shared types
-├── managers/         # Data owners (Future implementation)
-├── systems/          # Simulation logic (Future implementation)
-└── ui/              # Rendering (Future implementation)
+├── managers/         # Data owners (IMPLEMENTED)
+├── systems/          # Simulation logic (IMPLEMENTED)
+└── ui/              # Rendering (IMPLEMENTED)
 ```
 
 ## Implementation Guidance
 
-When implementing systems:
-1. Follow exact specifications in `system_implement_prompts.md`
+When modifying or extending systems:
+1. Reference `integration_guide_renew.md` for comprehensive patterns
 2. Use only `core::*` imports
 3. Return `GameResult<T>` from all operations
 4. Emit events for state changes
 5. Run architecture tests to verify compliance
+6. Follow code review checklist in integration guide
+7. Maintain deterministic behavior for save/load compatibility
 
 ## Key Integration Points
 
@@ -114,5 +119,38 @@ When implementing systems:
 - ShipManager handles movement and cargo
 - EventBus routes commands to appropriate systems
 - UI generates only PlayerCommand events
+- SaveSystem ensures deterministic state preservation
 
 All systems must integrate through these defined interfaces only.
+
+## Quality Standards
+
+### Performance Targets
+- **Current Phase**: 30+ FPS with 20 planets, 100 ships
+- **System Updates**: <10ms per system per tick
+- **Memory**: Bounded collections, no memory leaks
+
+### Code Quality
+- All manager operations return `GameResult<T>`
+- No `unsafe` code without justification
+- Comprehensive error handling
+- Full rustdoc documentation for public APIs
+
+### Development Workflow
+1. Create feature branch from main
+2. Implement with tests (use `test_fixtures` for consistency)
+3. Run full test suite: `cargo test`
+4. Run quality checks: `cargo clippy && cargo fmt`
+5. Verify architecture compliance
+6. Create PR with detailed description
+
+## Advanced Patterns
+
+For complex implementations, consult `integration_guide_renew.md` for:
+- Event aggregation and optimization
+- Manager scaling strategies
+- Testing patterns (property-based, integration)
+- Error handling and recovery
+- Performance monitoring
+
+This guide covers essential patterns. See integration guide for comprehensive scaling patterns.

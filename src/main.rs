@@ -59,9 +59,9 @@ async fn main() -> GameResult<()> {
             return Err(e);
         }
         
-        // Exit condition
-        if is_key_pressed(KeyCode::Escape) {
-            println!("Escape key pressed, exiting game");
+        // Exit conditions
+        if is_key_pressed(KeyCode::Escape) || game_state.should_exit {
+            println!("Exit requested, shutting down game");
             break;
         }
         

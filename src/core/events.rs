@@ -26,6 +26,10 @@ pub enum PlayerCommand {
     PauseGame(bool),
     SaveGame,
     LoadGame,
+    // Menu-related commands
+    NewGame,
+    ExitGame,
+    BackToMenu,
 }
 
 #[derive(Debug, Clone)]

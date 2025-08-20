@@ -2,7 +2,8 @@
 use crate::core::{GameResult, GameEvent, EventBus, GameState};
 use crate::core::types::*;
 use crate::core::events::{PlayerCommand, StateChange};
-use crate::ui::{Toolbar, PlanetListMenu, ShipListMenu};
+use crate::ui::{Toolbar, PlanetListMenu, ShipListMenu, ShipPanel, PlanetPanel};
+use crate::ui::panels::Panel;
 use macroquad::prelude::*;
 use std::f32::consts::PI;
 use std::collections::HashMap;
@@ -55,6 +56,8 @@ pub struct UIRenderer {
     toolbar: Toolbar,
     planet_list_menu: PlanetListMenu,
     ship_list_menu: ShipListMenu,
+    ship_panel: ShipPanel,
+    planet_panel: PlanetPanel,
     // Performance optimizations
     cached_planet_positions: HashMap<PlanetId, (Vector2, u64)>, // Position cache with tick
     cached_ship_positions: HashMap<ShipId, (Vector2, u64)>,     // Position cache with tick
@@ -127,6 +130,8 @@ impl UIRenderer {
             toolbar: Toolbar::new(),
             planet_list_menu: PlanetListMenu::new(),
             ship_list_menu: ShipListMenu::new(),
+            ship_panel: ShipPanel::new(),
+            planet_panel: PlanetPanel::new(),
             cached_planet_positions: HashMap::with_capacity(100), // Pre-allocate for typical game
             cached_ship_positions: HashMap::with_capacity(500),   // Pre-allocate for typical game
             cached_empire_resources: None,
@@ -268,10 +273,12 @@ impl UIRenderer {
                     GameEvent::PlayerCommand(PlayerCommand::SelectPlanet(planet_id)) => {
                         self.selected_planet = Some(planet_id);
                         self.ui_context.planet_panel_open = true;
+                        self.planet_panel.show_planet(planet_id);
                     }
                     GameEvent::PlayerCommand(PlayerCommand::SelectShip(ship_id)) => {
                         self.selected_ship = Some(ship_id);
                         self.ui_context.ship_panel_open = true;
+                        self.ship_panel.show(ship_id);
                     }
                     _ => {} // Handle other events as needed
                 }
@@ -440,6 +447,7 @@ impl UIRenderer {
                 if is_hovered && is_mouse_button_pressed(MouseButton::Left) {
                     self.selected_planet = Some(planet.id);
                     self.ui_context.planet_panel_open = true;
+                    self.planet_panel.show_planet(planet.id);
                     events.push(GameEvent::PlayerCommand(PlayerCommand::SelectPlanet(planet.id)));
                     // Close the dropdown after selection
                     self.toolbar.planets_menu_open = false;
@@ -516,6 +524,7 @@ impl UIRenderer {
                 if is_hovered && is_mouse_button_pressed(MouseButton::Left) {
                     self.selected_ship = Some(ship.id);
                     self.ui_context.ship_panel_open = true;
+                    self.ship_panel.show(ship.id);
                     events.push(GameEvent::PlayerCommand(PlayerCommand::SelectShip(ship.id)));
                     // Close the dropdown after selection
                     self.toolbar.ships_menu_open = false;
@@ -667,11 +676,13 @@ impl UIRenderer {
                     StateChange::PlanetUpdated(planet_id) => {
                         if Some(*planet_id) == self.selected_planet {
                             self.ui_context.planet_panel_open = true;
+                            self.planet_panel.show_planet(*planet_id);
                         }
                     }
                     StateChange::ShipUpdated(ship_id) => {
                         if Some(*ship_id) == self.selected_ship {
                             self.ui_context.ship_panel_open = true;
+                            self.ship_panel.show(*ship_id);
                         }
                     }
                     _ => {}
@@ -884,14 +895,40 @@ impl UIRenderer {
             
             // Planet panel with proper close button handling
             if self.ui_context.planet_panel_open && self.selected_planet.is_some() {
-                self.render_planet_panel(state)?;
-                self.handle_panel_close_buttons()?;
+                // Get the selected planet
+                let planet = if let Some(planet_id) = self.selected_planet {
+                    state.planet_manager.get_planet(planet_id).ok()
+                } else {
+                    None
+                };
+                
+                // Create a temporary EventBus for the panel
+                let mut temp_event_bus = EventBus::new();
+                if let Some(planet) = planet {
+                    self.planet_panel.render(planet, &mut temp_event_bus)?;
+                }
+                
+                // Handle planet panel input
+                self.planet_panel.handle_input(&mut temp_event_bus)?;
             }
             
             // Ship panel
             if self.ui_context.ship_panel_open && self.selected_ship.is_some() {
-                self.render_ship_panel(state)?;
-                self.handle_panel_close_buttons()?;
+                // Get the selected ship
+                let ship = if let Some(ship_id) = self.selected_ship {
+                    state.ship_manager.get_ship(ship_id).ok()
+                } else {
+                    None
+                };
+                
+                // Create a temporary EventBus for the panel
+                let mut temp_event_bus = EventBus::new();
+                self.ship_panel.render(ship, &mut temp_event_bus)?;
+                
+                // Extract events from the EventBus and add to our events vector
+                // Note: EventBus doesn't currently have a method to extract events, 
+                // so we'll need to handle this differently in the future.
+                // For now, the ship panel will handle its own events internally.
             }
             
             // Build menu with proper close button handling
@@ -926,6 +963,7 @@ impl UIRenderer {
                 if mouse_x >= close_x && mouse_x <= close_x + close_w &&
                    mouse_y >= close_y && mouse_y <= close_y + close_h {
                     self.ui_context.planet_panel_open = false;
+                    self.planet_panel.hide();
                     // Also clear selection to prevent auto-reopening
                     self.selected_planet = None;
                     return Ok(());
@@ -945,6 +983,7 @@ impl UIRenderer {
                 if mouse_x >= close_x && mouse_x <= close_x + close_w &&
                    mouse_y >= close_y && mouse_y <= close_y + close_h {
                     self.ui_context.ship_panel_open = false;
+                    self.ship_panel.hide();
                     return Ok(());
                 }
             }
@@ -1080,163 +1119,7 @@ impl UIRenderer {
         Ok(())
     }
     
-    fn render_planet_panel(&mut self, state: &GameState) -> GameResult<()> {
-        #[cfg(not(test))]
-        {
-            if let Some(planet_id) = self.selected_planet {
-                match state.planet_manager.get_planet(planet_id) {
-                    Ok(planet) => {
-                        // Validate screen dimensions
-                        let screen_w = screen_width();
-                        let screen_h = screen_height();
-                        if screen_w <= 0.0 || screen_h <= 0.0 {
-                            return Ok(());
-                        }
-                        
-                        let panel_x = screen_w - 350.0;
-                        let panel_y = 170.0;
-                        let panel_w = 340.0;
-                        let panel_h = 300.0;
-                        
-                        // Ensure panel fits on screen
-                        if panel_x < 0.0 || panel_y + panel_h > screen_h {
-                            return Ok(());
-                        }
-                        
-                        // Mark mouse over UI for interaction tracking
-                        let (mouse_x, mouse_y) = mouse_position();
-                        if mouse_x >= panel_x && mouse_x <= panel_x + panel_w && 
-                           mouse_y >= panel_y && mouse_y <= panel_y + panel_h {
-                            self.ui_context.mouse_over_ui = true;
-                        }
-                        
-                        // Panel background
-                        draw_rectangle(panel_x, panel_y, panel_w, panel_h, Color::new(0.0, 0.0, 0.0, 0.8));
-                        draw_rectangle_lines(panel_x, panel_y, panel_w, panel_h, 2.0, WHITE);
-                        
-                        let mut y_offset = 25.0;
-                        
-                        // Title with owner information
-                        let title = if let Some(controller) = planet.controller {
-                            format!("Planet {} (Faction {})", planet_id, controller)
-                        } else {
-                            format!("Planet {} (Neutral)", planet_id)
-                        };
-                        draw_text(&title, panel_x + 10.0, panel_y + y_offset, 18.0, WHITE);
-                        y_offset += 25.0;
-                        
-                        // Population with growth indicator
-                        let pop_color = if planet.population.total > 0 { WHITE } else { GRAY };
-                        draw_text(&format!("Population: {}", planet.population.total), 
-                            panel_x + 10.0, panel_y + y_offset, 14.0, pop_color);
-                        y_offset += 20.0;
-                        
-                        // Resources with capacity indicators
-                        draw_text("Resources:", panel_x + 10.0, panel_y + y_offset, 14.0, WHITE);
-                        y_offset += 15.0;
-                        
-                        let resources = [
-                            ("Minerals", planet.resources.current.minerals, planet.resources.capacity.minerals),
-                            ("Food", planet.resources.current.food, planet.resources.capacity.food),
-                            ("Energy", planet.resources.current.energy, planet.resources.capacity.energy),
-                            ("Alloys", planet.resources.current.alloys, planet.resources.capacity.alloys),
-                            ("Components", planet.resources.current.components, planet.resources.capacity.components),
-                            ("Fuel", planet.resources.current.fuel, planet.resources.capacity.fuel),
-                        ];
-                        
-                        for (name, current, capacity) in resources {
-                            // Color code based on resource levels
-                            let color = if current <= 0 {
-                                RED
-                            } else if capacity > 0 && current >= capacity {
-                                YELLOW
-                            } else {
-                                LIGHTGRAY
-                            };
-                            
-                            let text = if capacity > 0 {
-                                format!("  {}: {}/{}", name, current, capacity)
-                            } else {
-                                format!("  {}: {}", name, current)
-                            };
-                            
-                            draw_text(&text, panel_x + 20.0, panel_y + y_offset, 12.0, color);
-                            y_offset += 15.0;
-                        }
-                        
-                        // Buildings with details
-                        y_offset += 10.0;
-                        draw_text(&format!("Buildings: {}", planet.developments.len()), 
-                            panel_x + 10.0, panel_y + y_offset, 14.0, WHITE);
-                        y_offset += 20.0;
-                        
-                        // Action buttons with improved spacing
-                        if self.render_button(panel_x + 10.0, panel_y + y_offset, 100.0, 25.0, "Build") {
-                            self.ui_context.build_menu_open = true;
-                        }
-                        
-                        if self.render_button(panel_x + 120.0, panel_y + y_offset, 100.0, 25.0, "Close") {
-                            self.ui_context.planet_panel_open = false;
-                            // Clear selection to prevent auto-reopening
-                            self.selected_planet = None;
-                        }
-                    }
-                    Err(_) => {
-                        // Planet no longer exists, clear selection
-                        self.selected_planet = None;
-                        self.ui_context.planet_panel_open = false;
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
     
-    fn render_ship_panel(&mut self, _state: &GameState) -> GameResult<()> {
-        if let Some(ship_id) = self.selected_ship {
-            if let Ok(ship) = _state.ship_manager.get_ship(ship_id) {
-                let panel_x = 50.0;
-                let panel_y = screen_height() - 200.0;
-                let panel_w = 300.0;
-                let panel_h = 150.0;
-                
-                // Panel background
-                draw_rectangle(panel_x, panel_y, panel_w, panel_h, Color::new(0.0, 0.0, 0.0, 0.8));
-                draw_rectangle_lines(panel_x, panel_y, panel_w, panel_h, 2.0, WHITE);
-                
-                let mut y_offset = 25.0;
-                
-                // Title
-                let class_name = match ship.ship_class {
-                    ShipClass::Scout => "Scout",
-                    ShipClass::Transport => "Transport",
-                    ShipClass::Warship => "Warship",
-                    ShipClass::Colony => "Colony Ship",
-                };
-                draw_text(&format!("{} {}", class_name, ship_id), 
-                    panel_x + 10.0, panel_y + y_offset, 16.0, WHITE);
-                y_offset += 25.0;
-                
-                // Status
-                draw_text(&format!("Fuel: {:.1}", ship.fuel), 
-                    panel_x + 10.0, panel_y + y_offset, 14.0, WHITE);
-                y_offset += 20.0;
-                
-                if ship.cargo.population > 0 || ship.cargo.resources.minerals > 0 {
-                    draw_text(&format!("Cargo: {} pop, {} min", 
-                        ship.cargo.population, ship.cargo.resources.minerals), 
-                        panel_x + 10.0, panel_y + y_offset, 14.0, WHITE);
-                    // y_offset += 20.0; // Removed unused assignment
-                }
-                
-                // Close button
-                if self.render_button(panel_x + panel_w - 60.0, panel_y + 10.0, 50.0, 20.0, "Close") {
-                    self.ui_context.ship_panel_open = false;
-                }
-            }
-        }
-        Ok(())
-    }
     
     fn render_build_menu(&mut self, _state: &GameState, events: &mut Vec<GameEvent>) -> GameResult<()> {
         #[cfg(not(test))]
@@ -1363,6 +1246,8 @@ impl UIRenderer {
             self.selected_planet = None;
             self.ui_context.ship_panel_open = true;
             self.ui_context.planet_panel_open = false;
+            self.ship_panel.show(ship_id);
+            self.planet_panel.hide();
             
             _events.queue_event(GameEvent::PlayerCommand(
                 PlayerCommand::SelectShip(ship_id)
@@ -1375,6 +1260,8 @@ impl UIRenderer {
             self.selected_ship = None;
             self.ui_context.planet_panel_open = true;
             self.ui_context.ship_panel_open = false;
+            self.ship_panel.hide();
+            self.planet_panel.show_planet(planet_id);
             
             // Double-click opens build menu for planets
             if is_double_click {
@@ -1394,6 +1281,8 @@ impl UIRenderer {
             self.ui_context.planet_panel_open = false;
             self.ui_context.ship_panel_open = false;
             self.ui_context.build_menu_open = false;
+            self.ship_panel.hide();
+            self.planet_panel.hide();
         }
         
         Ok(())
@@ -1415,6 +1304,7 @@ impl UIRenderer {
             if _state.ship_manager.get_ship(ship_id).is_err() {
                 self.selected_ship = None;
                 self.ui_context.ship_panel_open = false;
+                self.ship_panel.hide();
                 return Ok(());
             }
             
@@ -1510,13 +1400,15 @@ impl UIRenderer {
             if is_key_pressed(KeyCode::P) {
                 // Toggle planet panel - will auto-select first planet if none selected
                 self.ui_context.planet_panel_open = !self.ui_context.planet_panel_open;
-                if self.ui_context.planet_panel_open && self.selected_planet.is_none() {
-                    // Use cached first player planet ID
-                    if let Some(planet_id) = self.first_player_planet {
+                if self.ui_context.planet_panel_open {
+                    if let Some(planet_id) = self.selected_planet.or(self.first_player_planet) {
+                        self.planet_panel.show_planet(planet_id);
                         _events.queue_event(GameEvent::PlayerCommand(
                             PlayerCommand::SelectPlanet(planet_id)
                         ));
                     }
+                } else {
+                    self.planet_panel.hide();
                 }
             }
             
@@ -1537,13 +1429,15 @@ impl UIRenderer {
             if is_key_pressed(KeyCode::H) {
                 // Toggle ship panel - will auto-select first ship if none selected
                 self.ui_context.ship_panel_open = !self.ui_context.ship_panel_open;
-                if self.ui_context.ship_panel_open && self.selected_ship.is_none() {
-                    // Use cached first player ship ID
-                    if let Some(ship_id) = self.first_player_ship {
+                if self.ui_context.ship_panel_open {
+                    if let Some(ship_id) = self.selected_ship.or(self.first_player_ship) {
+                        self.ship_panel.show(ship_id);
                         _events.queue_event(GameEvent::PlayerCommand(
                             PlayerCommand::SelectShip(ship_id)
                         ));
                     }
+                } else {
+                    self.ship_panel.hide();
                 }
             }
             

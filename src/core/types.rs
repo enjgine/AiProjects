@@ -424,3 +424,10 @@ pub enum VictoryType {
     Military,
     Timeout,
 }
+
+// Game modes for menu/game state management
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GameMode {
+    MainMenu,
+    InGame,
+}

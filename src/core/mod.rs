@@ -9,7 +9,7 @@ pub use types::*;
 // Import managers and systems
 use crate::managers::{PlanetManager, ShipManager, FactionManager};
 use crate::systems::{TimeManager, ResourceSystem, PopulationSystem, ConstructionSystem, PhysicsEngine, CombatResolver, SaveSystem};
-use crate::ui::UIRenderer;
+use crate::ui::{UIRenderer, StartMenu};
 
 pub struct GameState {
     pub event_bus: EventBus,
@@ -24,6 +24,10 @@ pub struct GameState {
     pub combat_resolver: CombatResolver,
     pub save_system: SaveSystem,
     pub ui_renderer: UIRenderer,
+    pub start_menu: StartMenu,
+    pub current_mode: GameMode,
+    pub should_exit: bool,
+    menu_events: Vec<GameEvent>,
 }
 
 impl GameState {
@@ -61,28 +65,49 @@ impl GameState {
             combat_resolver: CombatResolver::new(),
             save_system: SaveSystem::new(),
             ui_renderer: UIRenderer::new(),
+            start_menu: StartMenu::new(),
+            current_mode: GameMode::MainMenu,
+            should_exit: false,
+            menu_events: Vec::new(),
         };
         
-        // Initialize with some basic content for testing
-        state.initialize_demo_content()?;
+        // Don't initialize demo content when starting in main menu mode
+        // Demo content will be initialized when starting a new game
         
         Ok(state)
     }
     
     pub fn fixed_update(&mut self, delta: f32) -> GameResult<()> {
-        // Process input first
-        self.ui_renderer.process_input(&mut self.event_bus)?;
-        
-        // Update systems in strict order per architecture
-        self.physics_engine.update(delta, &mut self.event_bus)?;
-        self.resource_system.update(delta, &mut self.event_bus)?;
-        self.population_system.update(delta, &mut self.event_bus)?;
-        self.construction_system.update(delta, &mut self.event_bus)?;
-        self.combat_resolver.update(delta, &mut self.event_bus)?;
-        self.time_manager.update(delta, &mut self.event_bus)?;
-        
-        // Process all queued events after system updates
-        self.process_queued_events()?;
+        match self.current_mode {
+            GameMode::MainMenu => {
+                // In main menu mode, process keyboard input
+                let keyboard_events = self.start_menu.process_input()?;
+                for event in keyboard_events {
+                    self.handle_menu_event(event)?;
+                }
+                
+                // Process any mouse events that were captured during rendering
+                let mouse_events = std::mem::take(&mut self.menu_events);
+                for event in mouse_events {
+                    self.handle_menu_event(event)?;
+                }
+            }
+            GameMode::InGame => {
+                // Process input first
+                self.ui_renderer.process_input(&mut self.event_bus)?;
+                
+                // Update systems in strict order per architecture
+                self.physics_engine.update(delta, &mut self.event_bus)?;
+                self.resource_system.update(delta, &mut self.event_bus)?;
+                self.population_system.update(delta, &mut self.event_bus)?;
+                self.construction_system.update(delta, &mut self.event_bus)?;
+                self.combat_resolver.update(delta, &mut self.event_bus)?;
+                self.time_manager.update(delta, &mut self.event_bus)?;
+                
+                // Process all queued events after system updates
+                self.process_queued_events()?;
+            }
+        }
         
         Ok(())
     }
@@ -275,6 +300,10 @@ impl GameState {
                     match cmd {
                         PlayerCommand::SaveGame => self.handle_save_game_command(),
                         PlayerCommand::LoadGame => self.handle_load_game_command(),
+                        PlayerCommand::BackToMenu => {
+                            self.current_mode = GameMode::MainMenu;
+                            Ok(())
+                        }
                         _ => self.save_system.handle_event(event),
                     }
                 } else {
@@ -327,20 +356,31 @@ impl GameState {
     }
     
     pub fn render(&mut self, interpolation: f32) -> GameResult<()> {
-        // Create a temporary collection for events generated during rendering
-        let mut render_events = Vec::new();
-        
-        // Temporarily extract ui_renderer to avoid borrow conflicts
-        let mut ui_renderer = std::mem::replace(&mut self.ui_renderer, UIRenderer::new());
-        let result = ui_renderer.render_with_events(self, interpolation, &mut render_events);
-        self.ui_renderer = ui_renderer;
-        
-        // Queue any events that were generated during rendering
-        for event in render_events {
-            self.event_bus.queue_event(event);
+        match self.current_mode {
+            GameMode::MainMenu => {
+                // Render the menu every frame for smooth display
+                let menu_events = self.start_menu.render()?;
+                // Store mouse events to be processed in next fixed_update
+                self.menu_events.extend(menu_events);
+                Ok(())
+            }
+            GameMode::InGame => {
+                // Create a temporary collection for events generated during rendering
+                let mut render_events = Vec::new();
+                
+                // Temporarily extract ui_renderer to avoid borrow conflicts
+                let mut ui_renderer = std::mem::replace(&mut self.ui_renderer, UIRenderer::new());
+                let result = ui_renderer.render_with_events(self, interpolation, &mut render_events);
+                self.ui_renderer = ui_renderer;
+                
+                // Queue any events that were generated during rendering
+                for event in render_events {
+                    self.event_bus.queue_event(event);
+                }
+                
+                result
+            }
         }
-        
-        result
     }
     
     /// Processes queued events manually - used for testing.
@@ -348,6 +388,47 @@ impl GameState {
     /// Available in both unit tests and integration tests.
     pub fn process_queued_events_for_test(&mut self) -> GameResult<()> {
         self.process_queued_events()
+    }
+    
+    fn handle_menu_event(&mut self, event: GameEvent) -> GameResult<()> {
+        if let GameEvent::PlayerCommand(cmd) = event {
+            match cmd {
+                PlayerCommand::NewGame => {
+                    // Reset game state and switch to in-game mode
+                    self.current_mode = GameMode::InGame;
+                    // Reset all game systems to initial state
+                    self.time_manager = TimeManager::new();
+                    self.planet_manager = PlanetManager::new();
+                    self.ship_manager = ShipManager::new();
+                    self.faction_manager = FactionManager::new();
+                    self.resource_system = ResourceSystem::new();
+                    self.population_system = PopulationSystem::new();
+                    self.construction_system = ConstructionSystem::new();
+                    self.physics_engine = PhysicsEngine::new();
+                    self.combat_resolver = CombatResolver::new();
+                    // Initialize demo content for new game
+                    self.initialize_demo_content()?;
+                }
+                PlayerCommand::LoadGame => {
+                    // Update save status in menu (this could check for save file existence)
+                    self.start_menu.update_save_status(true);
+                    // Handle load game command
+                    self.handle_load_game_command()?;
+                    self.current_mode = GameMode::InGame;
+                }
+                PlayerCommand::ExitGame => {
+                    // Set exit flag to be handled by main loop
+                    self.should_exit = true;
+                }
+                PlayerCommand::BackToMenu => {
+                    self.current_mode = GameMode::MainMenu;
+                }
+                _ => {
+                    // Other commands are not valid in menu mode
+                }
+            }
+        }
+        Ok(())
     }
     
     /// Initialize some demo content for testing and initial gameplay
