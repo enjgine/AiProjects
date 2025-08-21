@@ -28,7 +28,11 @@
       "Bash(./test_load_functionality.exe)",
       "Bash(.test_save_detection.exe)",
       "Bash(./test_save_system.exe)",
-      "Bash(timeout 30s cargo run)"
+      "Bash(timeout 30s cargo run)",
+      "Bash(cp:*)",
+      "Bash(sed:*)",
+      "Bash(grep:*)",
+      "Bash(timeout 10s cargo run)"
     ],
     "deny": [],
     "ask": [],

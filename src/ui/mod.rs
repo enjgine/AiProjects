@@ -20,6 +20,10 @@ pub mod list_menus;
 pub mod start_menu;
 pub mod save_load_dialog;
 
+// New modular components for better organization
+pub mod resource_display;
+pub mod drawing_utils;
+
 // Future modules (planned architecture)
 // These will be implemented when needed:
 // - camera: View transformation and viewport management
@@ -32,6 +36,9 @@ pub use panels::{PlanetPanel, ShipPanel, ResourcePanel, Panel};
 pub use toolbar::Toolbar;
 pub use list_menus::{PlanetListMenu, ShipListMenu};
 pub use start_menu::StartMenu;
+
+// Re-export new modular components
+pub use resource_display::ResourceDisplay;
 
 // Re-export utility modules for external use
 pub use ui_config::validate_ui_config;

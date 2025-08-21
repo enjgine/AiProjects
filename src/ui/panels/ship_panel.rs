@@ -34,8 +34,9 @@ struct ButtonStates {
 
 impl ShipPanel {
     pub fn new() -> Self {
+        // Position will be updated dynamically to bottom-right
         Self {
-            panel_rect: Rect::new(320.0, 10.0, 280.0, 400.0), // Increased size for better layout
+            panel_rect: Rect::new(320.0, 200.0, 280.0, 400.0), // Initial position, will be repositioned
             visible: false,
             selected_ship_id: None,
             scroll_offset: 0.0,
@@ -45,9 +46,10 @@ impl ShipPanel {
     }
     
     pub fn render(&mut self, ship: Option<&Ship>, events: &mut EventBus) -> GameResult<()> {
-        if !self.visible {
-            return Ok(());
-        }
+        // Removed early return - renderer already checks visibility conditions
+        // if !self.visible {
+        //     return Ok(());
+        // }
         
         // Validate ship data if provided
         if let Some(ship) = ship {
@@ -93,6 +95,12 @@ impl ShipPanel {
         self.scroll_offset = 0.0;
         self.button_states = ButtonStates::default();
         self.cached_mouse_pos = None;
+    }
+    
+    /// Set the panel position
+    pub fn set_position(&mut self, x: f32, y: f32) {
+        self.panel_rect.x = x;
+        self.panel_rect.y = y;
     }
     
     pub fn is_visible(&self) -> bool {

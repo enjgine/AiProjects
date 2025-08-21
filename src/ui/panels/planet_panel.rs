@@ -32,7 +32,7 @@ pub struct PlanetPanel {
 impl Panel for PlanetPanel {
     fn new() -> Self {
         Self {
-            panel_rect: Rect::new(10.0, 10.0, 400.0, 500.0), // Increased size for better content
+            panel_rect: Rect::new(10.0, 50.0, 400.0, 500.0), // Top-left corner (below toolbar)
             visible: false,
             selected_planet_id: None,
             active_tab: PanelTab::Overview,
@@ -66,6 +66,12 @@ impl Panel for PlanetPanel {
 }
 
 impl PlanetPanel {
+    /// Set the panel position
+    pub fn set_position(&mut self, x: f32, y: f32) {
+        self.panel_rect.x = x;
+        self.panel_rect.y = y;
+    }
+    
     /// Display a specific planet in this panel
     pub fn show_planet(&mut self, planet_id: PlanetId) {
         if self.selected_planet_id != Some(planet_id) {
@@ -112,9 +118,10 @@ impl PlanetPanel {
     }
     
     pub fn render(&mut self, planet: &Planet, _events: &mut EventBus) -> GameResult<()> {
-        if !self.visible {
-            return Ok(());
-        }
+        // Removed early return - renderer already checks visibility conditions
+        // if !self.visible {
+        //     return Ok(());
+        // }
         
         // Enhanced input validation
         if Some(planet.id) != self.selected_planet_id {

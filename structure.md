@@ -339,7 +339,7 @@ stellar-dominion/
 ### User Interface (`src/ui/`) - IMPLEMENTED
 
 #### `renderer.rs` - Main UI Renderer
-- `UIRenderer` - Main renderer struct
+- `UIRenderer` - Main renderer struct with centralized panel management
   - `pub fn new() -> Self`
   - `pub fn get_selected_planet(&self) -> Option<PlanetId>`
   - `pub fn get_selected_ship(&self) -> Option<ShipId>`
@@ -353,6 +353,32 @@ stellar-dominion/
   - `pub fn render_with_events(&mut self, state: &GameState, interpolation: f32, events: &mut Vec<GameEvent>) -> GameResult<()>`
   - `pub fn process_input(&mut self, events: &mut EventBus) -> GameResult<()>`
   - `pub fn handle_event(&mut self, event: &GameEvent) -> GameResult<()>`
+  - `fn handle_toolbar_interactions(&mut self, state: &GameState, events: &mut Vec<GameEvent>) -> GameResult<()>` - **ENHANCED**: Now accepts GameState to check content availability
+  - `fn render_disabled_toolbar_button(&mut self, x: f32, y: f32, w: f32, h: f32, text: &str)` - **NEW**: Renders grayed-out, non-clickable buttons
+  - `fn sync_panel_states(&mut self)` - **NEW**: Centralized panel state synchronization system
+  - `fn update_panel_positions(&mut self)` - **NEW**: Dynamic panel positioning based on screen size
+
+**Panel State Management Architecture:**
+- **Three-Tier Panel Control System**: UIRenderer.ui_context + Panel.visible + centralized synchronization
+- **Primary Control**: `ui_context.planet_panel_open`/`ship_panel_open` flags determine panel visibility intent
+- **Panel Internal State**: Individual panels maintain `visible` field controlled by `show()`/`hide()` methods  
+- **Synchronization**: `sync_panel_states()` called every frame to coordinate all three systems
+- **Automatic Cleanup**: Panels close and flags reset when selections are cleared
+- **Non-Breaking**: All existing Panel trait methods preserved
+
+**Dynamic Panel Positioning System:**
+- **Planet Panel**: Top-left corner at `(10.0, 50.0)` - below toolbar with 50px offset
+- **Ship Panel**: Bottom-right corner at `(screen_width - 280 - 10, screen_height - 400 - 10)` - with 10px margins
+- **Screen Responsive**: Panel positions recalculate every frame based on current screen dimensions
+
+**Panel Visibility Architecture (August 2025 Fix):**
+- **Single Point of Control**: UIRenderer validates visibility conditions before calling panel render methods
+- **Renderer Logic**: Checks `ui_context.planet_panel_open && selected_planet.is_some()` before rendering
+- **Panel Render Methods**: Removed internal `if !self.visible { return Ok(()); }` guards to eliminate dual checking
+- **Centralized Synchronization**: `sync_panel_states()` method coordinates all three panel state systems
+- **Clean Implementation**: No redundant visibility checks between renderer and panel internal logic
+- **Position Methods**: Both panels have `set_position(x, y)` methods for dynamic positioning
+- **Integration**: Position updates integrated into main synchronization system for consistency
 
 #### `input_handler.rs` - Input Processing
 - `InputHandler` - Main input struct
@@ -437,25 +463,50 @@ stellar-dominion/
   - UI state and panel management coordination
 
 #### `panels/planet_panel.rs` - Planet Information
-- `PlanetPanel` - Panel state
+- `PlanetPanel` - Panel state with dynamic positioning
   - `pub fn new() -> Self`
+  - `pub fn set_position(&mut self, x: f32, y: f32)` - **NEW**: Dynamic positioning support
   - `pub fn render(&mut self, planet_id: PlanetId, state: &GameState, ui_state: &mut UIState) -> Vec<GameEvent>`
   - `pub fn render_overview_tab(&mut self, planet: &Planet) -> Vec<GameEvent>`
   - `pub fn render_buildings_tab(&mut self, planet: &Planet, state: &GameState) -> Vec<GameEvent>`
   - `pub fn render_population_tab(&mut self, planet: &Planet) -> Vec<GameEvent>`
   - `pub fn render_construction_tab(&mut self, planet: &Planet, state: &GameState) -> Vec<GameEvent>`
   - `pub fn handle_tab_change(&mut self, new_tab: PlanetTab)`
+  - **Position**: Top-left corner at `(10, 50)` below toolbar
   - Comprehensive planet information and management interface
 
 #### `panels/ship_panel.rs` - Ship Information
-- `ShipPanel` - Panel state
+- `ShipPanel` - Panel state with dynamic positioning
   - `pub fn new() -> Self`
+  - `pub fn set_position(&mut self, x: f32, y: f32)` - **NEW**: Dynamic positioning support
   - `pub fn render(&mut self, ship_id: ShipId, state: &GameState, ui_state: &mut UIState) -> Vec<GameEvent>`
   - `pub fn render_ship_details(&mut self, ship: &Ship) -> Vec<GameEvent>`
   - `pub fn render_cargo_display(&mut self, ship: &Ship, state: &GameState) -> Vec<GameEvent>`
   - `pub fn render_movement_controls(&mut self, ship: &Ship, state: &GameState) -> Vec<GameEvent>`
   - `pub fn render_combat_status(&mut self, ship: &Ship, state: &GameState) -> Vec<GameEvent>`
+  - **Position**: Bottom-right corner with screen-responsive calculations
   - Ship status, cargo, and command interface
+
+#### `resource_display.rs` - Resource Display Module  
+- `ResourceDisplay` - Modular resource rendering component
+  - `pub fn new() -> Self`
+  - `pub fn render_horizontal_bar(&mut self, state: &GameState) -> GameResult<()>` - Renders horizontal resource bar
+  - `pub fn render_side_panel(&mut self, state: &GameState, mouse_over_ui: &mut bool) -> GameResult<()>` - Renders side resource panel
+  - `fn update_240_tick_tracking(&mut self, state: &GameState) -> GameResult<()>` - Resource change tracking
+  - `fn get_cached_empire_resources(&mut self, state: &GameState) -> GameResult<ResourceBundle>` - Performance caching
+  - `fn calculate_empire_resources(&self, state: &GameState) -> GameResult<ResourceBundle>` - Resource calculation
+  - `fn calculate_empire_population(&self, state: &GameState) -> i32` - Population calculation
+  - Resource visualization with change indicators and performance optimization
+
+#### `drawing_utils.rs` - Drawing Utilities Module (Phase 3 Optimization)
+- `DrawingUtils` - Centralized drawing utilities for game objects
+  - `pub fn draw_orbit(planet: &Planet, zoom_level: f32) -> GameResult<()>` - Draws orbital paths
+  - `pub fn draw_planet_indicators(screen_pos: Vector2, planet: &Planet, zoom_level: f32) -> GameResult<()>` - Planet visual indicators
+  - `pub fn draw_ship_shape(screen_pos: Vector2, size: f32, color: Color, ship_class: ShipClass) -> GameResult<()>` - Ship rendering by class
+  - `pub fn draw_trajectory_line(screen_pos: Vector2, trajectory: &Trajectory, color: Color) -> GameResult<()>` - Movement trajectories
+  - `pub fn screen_to_world(screen_pos: Vector2, camera_position: Vector2, zoom_level: f32) -> Vector2` - Coordinate conversion
+  - `pub fn world_to_screen(world_pos: Vector2, camera_position: Vector2, zoom_level: f32) -> Vector2` - Coordinate conversion
+  - Optimized rendering with zoom-level scaling and screen validation
 
 #### `panels/resource_panel.rs` - Resource Display
 - `ResourcePanel` - Panel state
