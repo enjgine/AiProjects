@@ -229,6 +229,9 @@ impl UIRenderer {
             // Render HUD (adjusted for toolbar)
             self.render_hud(_state)?;
             
+            // Render game control buttons
+            self.render_game_control_buttons(events)?;
+            
             // Render Phase 2 UI components on top
             self.render_toolbar_and_menus(_state)?;
             
@@ -1026,20 +1029,93 @@ impl UIRenderer {
         draw_text(&cam_text, 10.0, 80.0, 16.0, LIGHTGRAY);
         
         // Enhanced controls help with Phase 2 shortcuts
-        let help_y = screen_height() - 180.0;
+        let help_y = screen_height() - 200.0;
         draw_text("Controls:", 10.0, help_y, 16.0, WHITE);
         draw_text("Space: Pause/Resume", 10.0, help_y + 20.0, 12.0, LIGHTGRAY);
         draw_text("WASD: Move Camera", 10.0, help_y + 35.0, 12.0, LIGHTGRAY);
         draw_text("Mouse Wheel: Zoom", 10.0, help_y + 50.0, 12.0, LIGHTGRAY);
         draw_text("Left Click: Select", 10.0, help_y + 65.0, 12.0, LIGHTGRAY);
         draw_text("Right Click: Orders", 10.0, help_y + 80.0, 12.0, LIGHTGRAY);
+        draw_text("Ctrl+S: Save", 10.0, help_y + 95.0, 12.0, LIGHTGRAY);
+        draw_text("Esc: Menu", 10.0, help_y + 110.0, 12.0, LIGHTGRAY);
         
         // Phase 2 shortcuts
-        draw_text("Phase 2 Menus:", 10.0, help_y + 100.0, 14.0, YELLOW);
-        draw_text("F1: Planet List", 10.0, help_y + 115.0, 12.0, LIGHTGRAY);
-        draw_text("F2: Ship List", 10.0, help_y + 130.0, 12.0, LIGHTGRAY);
-        draw_text("Tab: Cycle Menus", 10.0, help_y + 145.0, 12.0, LIGHTGRAY);
-        draw_text("R: Resources Panel", 10.0, help_y + 160.0, 12.0, LIGHTGRAY);
+        draw_text("Phase 2 Menus:", 10.0, help_y + 130.0, 14.0, YELLOW);
+        draw_text("F1: Planet List", 10.0, help_y + 145.0, 12.0, LIGHTGRAY);
+        draw_text("F2: Ship List", 10.0, help_y + 160.0, 12.0, LIGHTGRAY);
+        draw_text("Tab: Cycle Menus", 10.0, help_y + 175.0, 12.0, LIGHTGRAY);
+        draw_text("R: Resources Panel", 10.0, help_y + 190.0, 12.0, LIGHTGRAY);
+        }
+        
+        Ok(())
+    }
+    
+    fn render_game_control_buttons(&self, events: &mut Vec<GameEvent>) -> GameResult<()> {
+        #[cfg(not(test))]
+        {
+            let screen_w = screen_width();
+            let button_width = 80.0;
+            let button_height = 30.0;
+            let button_spacing = 10.0;
+            
+            // Position buttons in top right corner, below toolbar
+            let save_x = screen_w - (button_width + button_spacing);
+            let save_y = 50.0; // Below toolbar
+            let menu_x = save_x;
+            let menu_y = save_y + button_height + 5.0;
+            
+            // Save button
+            let mouse_pos = mouse_position();
+            let save_hovered = mouse_pos.0 >= save_x && mouse_pos.0 <= save_x + button_width &&
+                              mouse_pos.1 >= save_y && mouse_pos.1 <= save_y + button_height;
+            
+            let save_color = if save_hovered {
+                Color::from_rgba(80, 120, 80, 200)
+            } else {
+                Color::from_rgba(60, 100, 60, 180)
+            };
+            
+            draw_rectangle(save_x, save_y, button_width, button_height, save_color);
+            draw_rectangle_lines(save_x, save_y, button_width, button_height, 2.0, 
+                if save_hovered { LIME } else { GREEN });
+            
+            // Save button text
+            let save_text = "Save";
+            let save_text_width = measure_text(save_text, None, 16, 1.0).width;
+            let save_text_x = save_x + (button_width - save_text_width) / 2.0;
+            let save_text_y = save_y + (button_height + 12.0) / 2.0;
+            draw_text(save_text, save_text_x, save_text_y, 16.0, WHITE);
+            
+            // Check save button click
+            if save_hovered && is_mouse_button_pressed(MouseButton::Left) {
+                events.push(GameEvent::PlayerCommand(PlayerCommand::SaveGame));
+            }
+            
+            // Menu button
+            let menu_hovered = mouse_pos.0 >= menu_x && mouse_pos.0 <= menu_x + button_width &&
+                              mouse_pos.1 >= menu_y && mouse_pos.1 <= menu_y + button_height;
+            
+            let menu_color = if menu_hovered {
+                Color::from_rgba(120, 80, 80, 200)
+            } else {
+                Color::from_rgba(100, 60, 60, 180)
+            };
+            
+            draw_rectangle(menu_x, menu_y, button_width, button_height, menu_color);
+            draw_rectangle_lines(menu_x, menu_y, button_width, button_height, 2.0, 
+                if menu_hovered { PINK } else { RED });
+            
+            // Menu button text
+            let menu_text = "Menu";
+            let menu_text_width = measure_text(menu_text, None, 16, 1.0).width;
+            let menu_text_x = menu_x + (button_width - menu_text_width) / 2.0;
+            let menu_text_y = menu_y + (button_height + 12.0) / 2.0;
+            draw_text(menu_text, menu_text_x, menu_text_y, 16.0, WHITE);
+            
+            // Check menu button click
+            if menu_hovered && is_mouse_button_pressed(MouseButton::Left) {
+                events.push(GameEvent::PlayerCommand(PlayerCommand::BackToMenu));
+            }
         }
         
         Ok(())

@@ -25,11 +25,16 @@ pub enum PlayerCommand {
     SetGameSpeed(f32),
     PauseGame(bool),
     SaveGame,
+    SaveGameDialog, // Show save dialog to prompt for save name
+    SaveGameAs(String),
     LoadGame,
+    LoadGameFrom(String),
     // Menu-related commands
     NewGame,
+    NewGameNamed(String),
     ExitGame,
     BackToMenu,
+    GameOptions,
 }
 
 #[derive(Debug, Clone)]

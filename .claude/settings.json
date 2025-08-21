@@ -11,6 +11,8 @@
       "task"
     ],
     "deny": [],
-    "ask": []
+    "ask": [
+      "Bash(rm*)"
+    ]
   }
 }

@@ -1,14 +1,16 @@
 // src/core/mod.rs
 pub mod events;
 pub mod types;
+pub mod asset_types;
 
 // Re-export commonly used types
 pub use events::{EventBus, GameEvent, SystemId, PlayerCommand, SimulationEvent, StateChange};
 pub use types::*;
+pub use asset_types::{AssetId, AssetType, AssetCategory, AssetRarity, AssetRegistry, AssetCollection, Asset};
 
 // Import managers and systems
 use crate::managers::{PlanetManager, ShipManager, FactionManager};
-use crate::systems::{TimeManager, ResourceSystem, PopulationSystem, ConstructionSystem, PhysicsEngine, CombatResolver, SaveSystem};
+use crate::systems::{TimeManager, ResourceSystem, PopulationSystem, ConstructionSystem, PhysicsEngine, CombatResolver, SaveSystem, GameInitializer};
 use crate::ui::{UIRenderer, StartMenu};
 
 pub struct GameState {
@@ -25,8 +27,11 @@ pub struct GameState {
     pub save_system: SaveSystem,
     pub ui_renderer: UIRenderer,
     pub start_menu: StartMenu,
+    pub save_load_dialog: crate::ui::save_load_dialog::SaveLoadDialog,
     pub current_mode: GameMode,
     pub should_exit: bool,
+    pub game_initializer: GameInitializer,
+    pub current_save_name: Option<String>,
     menu_events: Vec<GameEvent>,
 }
 
@@ -66,10 +71,19 @@ impl GameState {
             save_system: SaveSystem::new(),
             ui_renderer: UIRenderer::new(),
             start_menu: StartMenu::new(),
+            save_load_dialog: crate::ui::save_load_dialog::SaveLoadDialog::new(),
             current_mode: GameMode::MainMenu,
             should_exit: false,
+            game_initializer: GameInitializer::new(GameConfiguration::default()),
+            current_save_name: None,
             menu_events: Vec::new(),
         };
+        
+        // Update StartMenu with correct save status
+        let saves_available = state.save_system.list_saves()
+            .map(|saves| !saves.is_empty())
+            .unwrap_or(false);
+        state.start_menu.update_save_status(saves_available);
         
         // Don't initialize demo content when starting in main menu mode
         // Demo content will be initialized when starting a new game
@@ -77,24 +91,61 @@ impl GameState {
         Ok(state)
     }
     
-    pub fn fixed_update(&mut self, delta: f32) -> GameResult<()> {
+    /// Process input every frame for responsive controls
+    pub fn process_input(&mut self) -> GameResult<()> {
         match self.current_mode {
             GameMode::MainMenu => {
-                // In main menu mode, process keyboard input
-                let keyboard_events = self.start_menu.process_input()?;
-                for event in keyboard_events {
+                // Process save/load dialog input first (takes priority when active)
+                let dialog_was_active = self.save_load_dialog.is_active();
+                let dialog_events = self.save_load_dialog.handle_input()?;
+                for event in dialog_events {
                     self.handle_menu_event(event)?;
                 }
                 
-                // Process any mouse events that were captured during rendering
-                let mouse_events = std::mem::take(&mut self.menu_events);
-                for event in mouse_events {
-                    self.handle_menu_event(event)?;
+                // Only process menu input if dialog was NOT active before processing input
+                // This prevents race condition where dialog closes and menu processes same keypress
+                if !dialog_was_active {
+                    // In main menu mode, process keyboard input
+                    let keyboard_events = self.start_menu.process_input()?;
+                    for event in keyboard_events {
+                        self.handle_menu_event(event)?;
+                    }
+                    
+                    // Process any mouse events that were captured during rendering
+                    let mouse_events = std::mem::take(&mut self.menu_events);
+                    for event in mouse_events {
+                        self.handle_menu_event(event)?;
+                    }
                 }
             }
             GameMode::InGame => {
-                // Process input first
-                self.ui_renderer.process_input(&mut self.event_bus)?;
+                // Process save/load dialog input first (takes priority when active)
+                let dialog_was_active = self.save_load_dialog.is_active();
+                let dialog_events = self.save_load_dialog.handle_input()?;
+                for event in dialog_events {
+                    // In-game dialog events should be processed as system events
+                    self.event_bus.queue_event(event);
+                }
+                
+                // Only process game input if dialog was NOT active before processing input
+                // This prevents race condition where dialog closes and game processes same keypress
+                if !dialog_was_active {
+                    // Process input first
+                    self.ui_renderer.process_input(&mut self.event_bus)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn fixed_update(&mut self, delta: f32) -> GameResult<()> {
+        match self.current_mode {
+            GameMode::MainMenu => {
+                // Input is now processed separately every frame
+                // No input processing in fixed update for menu
+            }
+            GameMode::InGame => {
+                // Input is now processed separately every frame
                 
                 // Update systems in strict order per architecture
                 self.physics_engine.update(delta, &mut self.event_bus)?;
@@ -298,10 +349,39 @@ impl GameState {
                 // Handle SaveSystem events specially since they need full GameState access
                 if let GameEvent::PlayerCommand(cmd) = event {
                     match cmd {
-                        PlayerCommand::SaveGame => self.handle_save_game_command(),
-                        PlayerCommand::LoadGame => self.handle_load_game_command(),
+                        PlayerCommand::SaveGame => {
+                            // Use stored game name if available, otherwise prompt for name
+                            if let Some(save_name) = self.current_save_name.clone() {
+                                // Save to current game name
+                                self.handle_save_game_as_command(&save_name)
+                            } else {
+                                // No current save name, show save dialog
+                                self.save_load_dialog.show_save_dialog();
+                                Ok(())
+                            }
+                        },
+                        PlayerCommand::SaveGameDialog => {
+                            // Always show save dialog to prompt for name
+                            self.save_load_dialog.show_save_dialog();
+                            Ok(())
+                        },
+                        PlayerCommand::SaveGameAs(name) => self.handle_save_game_as_command(name),
+                        PlayerCommand::LoadGame => Ok(()), // Handled in menu
+                        PlayerCommand::LoadGameFrom(name) => self.handle_load_game_from_slot_command(name),
                         PlayerCommand::BackToMenu => {
                             self.current_mode = GameMode::MainMenu;
+                            // Refresh save status when returning to menu
+                            self.start_menu.refresh_save_status();
+                            Ok(())
+                        }
+                        PlayerCommand::NewGame => {
+                            // NewGame commands should not be processed while in InGame mode
+                            // They should only be handled in MainMenu mode
+                            Ok(())
+                        }
+                        PlayerCommand::NewGameNamed(_) => {
+                            // NewGameNamed commands should not be processed while in InGame mode
+                            // They should only be handled in MainMenu mode
                             Ok(())
                         }
                         _ => self.save_system.handle_event(event),
@@ -315,24 +395,59 @@ impl GameState {
     }
 
     fn handle_save_game_command(&mut self) -> GameResult<()> {
+        // Use default name for quick save
+        let save_name = self.current_save_name.clone().unwrap_or_else(|| "quicksave".to_string());
+        self.handle_save_game_as_command(&save_name)
+    }
+
+    fn handle_load_game_command(&mut self) -> GameResult<()> {
+        // Use default name for quick load
+        let save_name = self.current_save_name.clone().unwrap_or_else(|| "quicksave".to_string());
+        self.handle_load_game_from_slot_command(&save_name)
+    }
+
+    fn handle_save_game_as_command(&mut self, name: &str) -> GameResult<()> {
+        // Update current save name for future saves
+        self.current_save_name = Some(name.to_string());
+        
         // Extract the save system temporarily to avoid borrow conflicts
-        let save_system = std::mem::replace(&mut self.save_system, SaveSystem::new());
-        let result = save_system.save_game(self);
+        let mut save_system = std::mem::replace(&mut self.save_system, SaveSystem::new());
+        let result = save_system.save_game_binary(self, name);
         self.save_system = save_system;
         result
     }
 
-    fn handle_load_game_command(&mut self) -> GameResult<()> {
+    fn handle_load_game_from_slot_command(&mut self, name: &str) -> GameResult<()> {
         // Extract the save system temporarily to avoid borrow conflicts
-        let save_system = std::mem::replace(&mut self.save_system, SaveSystem::new());
-        let save_data = save_system.load_game()?;
+        let mut save_system = std::mem::replace(&mut self.save_system, SaveSystem::new());
+        let save_data = save_system.load_game_binary(name)?;
         self.save_system = save_system;
         
-        // Apply the loaded data to the game state
-        self.time_manager.set_tick(save_data.tick)?;
-        self.planet_manager.load_planets(save_data.planets)?;
-        self.ship_manager.load_ships(save_data.ships)?;
-        self.faction_manager.load_factions(save_data.factions)?;
+        // Apply the loaded data to the game state in the correct order
+        // Only load actual data if it exists (avoid loading empty vectors that clear game state)
+        if !save_data.game_state.factions.is_empty() {
+            self.faction_manager.load_factions(save_data.game_state.factions)?;
+        }
+        
+        if !save_data.game_state.planets.is_empty() {
+            self.planet_manager.load_planets(save_data.game_state.planets)?;
+        }
+        
+        if !save_data.game_state.ships.is_empty() {
+            self.ship_manager.load_ships(save_data.game_state.ships)?;
+        }
+        
+        // Set the tick counter last
+        self.time_manager.set_tick(save_data.game_state.tick)?;
+        
+        // Clear event bus to remove any stale events referencing old entities
+        self.event_bus.clear();
+        
+        // Reset UI renderer to clear any cached selections or state
+        self.ui_renderer = UIRenderer::new();
+        
+        // Switch to gameplay mode after successful load
+        self.current_mode = GameMode::InGame;
         
         Ok(())
     }
@@ -343,6 +458,81 @@ impl GameState {
     
     pub fn get_current_tick(&self) -> u64 {
         self.time_manager.get_current_tick()
+    }
+    
+    pub fn is_dialog_active(&self) -> bool {
+        self.save_load_dialog.is_active()
+    }
+    
+    /// Get the current game configuration
+    pub fn get_game_configuration(&self) -> &GameConfiguration {
+        self.game_initializer.get_configuration()
+    }
+    
+    /// Set a new game configuration for future new games
+    pub fn set_game_configuration(&mut self, config: GameConfiguration) {
+        self.game_initializer.set_configuration(config);
+    }
+    
+    /// Cycle through different game configuration presets
+    fn cycle_game_configuration(&self, current: GameConfiguration) -> GameConfiguration {
+        // Define some preset configurations
+        let presets = [
+            // Small galaxy
+            GameConfiguration {
+                planet_count: 5,
+                starting_resources: ResourceBundle {
+                    minerals: 300,
+                    food: 200,
+                    energy: 150,
+                    alloys: 30,
+                    components: 15,
+                    fuel: 75,
+                },
+                starting_population: 750,
+                galaxy_size: GalaxySize::Small,
+                ai_opponents: 1,
+            },
+            // Medium galaxy
+            GameConfiguration {
+                planet_count: 8,
+                starting_resources: ResourceBundle {
+                    minerals: 500,
+                    food: 300,
+                    energy: 200,
+                    alloys: 50,
+                    components: 25,
+                    fuel: 100,
+                },
+                starting_population: 1000,
+                galaxy_size: GalaxySize::Medium,
+                ai_opponents: 2,
+            },
+            // Large galaxy
+            GameConfiguration {
+                planet_count: 12,
+                starting_resources: ResourceBundle {
+                    minerals: 800,
+                    food: 500,
+                    energy: 300,
+                    alloys: 80,
+                    components: 40,
+                    fuel: 150,
+                },
+                starting_population: 1500,
+                galaxy_size: GalaxySize::Large,
+                ai_opponents: 3,
+            },
+        ];
+        
+        // Find current preset and move to next
+        let current_index = presets.iter().position(|preset| {
+            preset.planet_count == current.planet_count && 
+            preset.galaxy_size == current.galaxy_size
+        }).unwrap_or(0);
+        
+        let next_index = (current_index + 1) % presets.len();
+        presets[next_index].clone()
     }
     
     pub fn save_game(&mut self) -> GameResult<()> {
@@ -359,9 +549,14 @@ impl GameState {
         match self.current_mode {
             GameMode::MainMenu => {
                 // Render the menu every frame for smooth display
-                let menu_events = self.start_menu.render()?;
+                let config = self.get_game_configuration().clone();
+                let menu_events = self.start_menu.render(Some(&config))?;
                 // Store mouse events to be processed in next fixed_update
                 self.menu_events.extend(menu_events);
+                
+                // Render save/load dialog on top if active
+                self.save_load_dialog.render()?;
+                
                 Ok(())
             }
             GameMode::InGame => {
@@ -377,6 +572,9 @@ impl GameState {
                 for event in render_events {
                     self.event_bus.queue_event(event);
                 }
+                
+                // Render save/load dialog on top if active
+                self.save_load_dialog.render()?;
                 
                 result
             }
@@ -394,9 +592,61 @@ impl GameState {
         if let GameEvent::PlayerCommand(cmd) = event {
             match cmd {
                 PlayerCommand::NewGame => {
-                    // Reset game state and switch to in-game mode
+                    // Show new game dialog
+                    self.save_load_dialog.show_new_game_dialog();
+                }
+                PlayerCommand::NewGameNamed(name) => {
+                    // Store the game name for future saves
+                    self.current_save_name = Some(name.clone());
+                    
+                    // Close dialog FIRST before any other operations
+                    self.save_load_dialog.close();
+                    
+                    // Use GameInitializer to set up new game with current configuration
+                    self.game_initializer.initialize_game(
+                        &mut self.planet_manager,
+                        &mut self.ship_manager,
+                        &mut self.faction_manager,
+                    )?;
+                    
+                    // Reset other systems to initial state
+                    self.time_manager = TimeManager::new();
+                    self.resource_system = ResourceSystem::new();
+                    self.population_system = PopulationSystem::new();
+                    self.construction_system = ConstructionSystem::new();
+                    self.physics_engine = PhysicsEngine::new();
+                    self.combat_resolver = CombatResolver::new();
+                    
+                    // Clear UI state and switch to in-game mode
+                    self.ui_renderer = UIRenderer::new();
+                    self.event_bus.clear();
+                    
+                    // Ensure dialog stays closed during mode switch
+                    self.save_load_dialog.close();
                     self.current_mode = GameMode::InGame;
-                    // Reset all game systems to initial state
+                    
+                    // Additional safety: ensure dialog is not active after mode switch
+                    self.save_load_dialog.close();
+                    
+                    // Auto-save the new game with the given name
+                    let mut save_system = std::mem::replace(&mut self.save_system, SaveSystem::new());
+                    let _result = save_system.save_game_binary(self, &name);
+                    self.save_system = save_system;
+                }
+                PlayerCommand::LoadGame => {
+                    // Show load game dialog with available saves
+                    let saves = self.save_system.list_saves()?;
+                    self.save_load_dialog.show_load_dialog(saves);
+                }
+                PlayerCommand::LoadGameFrom(name) => {
+                    // Store the game name for future saves
+                    self.current_save_name = Some(name.clone());
+                    
+                    // Close dialog FIRST before any other operations
+                    self.save_load_dialog.close();
+                    
+                    // First initialize a fresh game state to ensure all systems are properly set up
+                    // This prevents crashes from partially initialized systems during load
                     self.time_manager = TimeManager::new();
                     self.planet_manager = PlanetManager::new();
                     self.ship_manager = ShipManager::new();
@@ -406,22 +656,46 @@ impl GameState {
                     self.construction_system = ConstructionSystem::new();
                     self.physics_engine = PhysicsEngine::new();
                     self.combat_resolver = CombatResolver::new();
-                    // Initialize demo content for new game
-                    self.initialize_demo_content()?;
-                }
-                PlayerCommand::LoadGame => {
-                    // Update save status in menu (this could check for save file existence)
-                    self.start_menu.update_save_status(true);
-                    // Handle load game command
-                    self.handle_load_game_command()?;
-                    self.current_mode = GameMode::InGame;
+                    
+                    // Clear all UI state to prevent stale entity references
+                    self.ui_renderer = UIRenderer::new();
+                    
+                    // Clear any queued events that might reference old entities
+                    self.event_bus.clear();
+                    
+                    // Now load the specific saved game
+                    match self.handle_load_game_from_slot_command(&name) {
+                        Ok(()) => {
+                            // Ensure dialog stays closed during mode switch
+                            self.save_load_dialog.close();
+                            self.current_mode = GameMode::InGame;
+                            
+                            // Additional safety: ensure dialog is not active after mode switch
+                            self.save_load_dialog.close();
+                        }
+                        Err(e) => {
+                            // On error, stay in menu mode, ensure dialog is closed, and propagate error
+                            self.save_load_dialog.close();
+                            self.current_mode = GameMode::MainMenu;
+                            return Err(e);
+                        }
+                    }
                 }
                 PlayerCommand::ExitGame => {
                     // Set exit flag to be handled by main loop
                     self.should_exit = true;
                 }
+                PlayerCommand::GameOptions => {
+                    // TODO: Implement game options UI
+                    // For now, just cycle through some preset configurations
+                    let current_config = self.game_initializer.get_configuration().clone();
+                    let new_config = self.cycle_game_configuration(current_config);
+                    self.game_initializer.set_configuration(new_config);
+                }
                 PlayerCommand::BackToMenu => {
                     self.current_mode = GameMode::MainMenu;
+                    // Refresh save status when returning to menu
+                    self.start_menu.refresh_save_status();
                 }
                 _ => {
                     // Other commands are not valid in menu mode

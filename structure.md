@@ -9,10 +9,11 @@ stellar-dominion/
 │   ├── main.rs                         # Entry point (DO NOT MODIFY)
 │   ├── lib.rs                          # Module exports
 │   │
-│   ├── core/                           # CORE ARCHITECTURE (DO NOT MODIFY)
+│   ├── core/                           # CORE ARCHITECTURE (Enhanced)
 │   │   ├── mod.rs                      # GameState, EventBus ownership
 │   │   ├── events.rs                   # Event definitions
-│   │   └── types.rs                    # Shared types (Planet, Ship, etc.)
+│   │   ├── types.rs                    # Shared types (Planet, Ship, etc.)
+│   │   └── asset_types.rs              # Asset system types (50+ asset types)
 │   │
 │   ├── managers/                       # DATA OWNERS (Implemented)
 │   │   ├── mod.rs                      # Export all managers
@@ -20,7 +21,7 @@ stellar-dominion/
 │   │   ├── ship_manager.rs             # ShipManager implementation
 │   │   └── faction_manager.rs          # FactionManager implementation
 │   │
-│   ├── systems/                        # SIMULATION LOGIC (Implemented)
+│   ├── systems/                        # SIMULATION LOGIC (Enhanced)
 │   │   ├── mod.rs                      # Export all systems
 │   │   ├── time_manager.rs             # TimeManager implementation
 │   │   ├── physics_engine.rs           # PhysicsEngine implementation
@@ -28,7 +29,8 @@ stellar-dominion/
 │   │   ├── population_system.rs        # PopulationSystem implementation
 │   │   ├── construction.rs             # ConstructionSystem implementation
 │   │   ├── combat_resolver.rs          # CombatResolver implementation
-│   │   └── save_system.rs              # SaveSystem implementation
+│   │   ├── save_system.rs              # SaveSystem (binary, scalable, asset-aware)
+│   │   └── game_initializer.rs         # GameInitializer for configurable new games
 │   │
 │   └── ui/                             # RENDERING (Implemented)
 │       ├── mod.rs                      # Export UI components
@@ -39,6 +41,7 @@ stellar-dominion/
 │       ├── list_menus.rs               # List menu components
 │       ├── ui_state.rs                 # UI state management
 │       ├── start_menu.rs               # StartMenu component for main menu
+│       ├── save_load_dialog.rs         # Save/Load dialog system
 │       └── panels/                     # UI panel implementations
 │           ├── mod.rs                  # Panel exports
 │           ├── planet_panel.rs         # Planet information panel
@@ -47,12 +50,12 @@ stellar-dominion/
 │
 └── tests/
     ├── architecture_invariants.rs      # Architecture validation (DO NOT MODIFY)
+    ├── dialog_state_test.rs            # Dialog state management, race condition, and event handling tests
     ├── integration_tests.rs            # System integration tests
     ├── phase2_integration_test.rs      # Phase 2 integration validation
     ├── physics_engine_test.rs          # Physics engine unit tests
     ├── planet_manager_test.rs          # Planet manager unit tests
-    ├── save_system_integration.rs      # Save system integration tests
-    ├── save_system_integration_enhanced.rs # Enhanced save system tests
+    ├── save_system_test.rs             # Save system comprehensive tests
     ├── time_manager_integration.rs     # Time manager integration tests
     └── systems/                        # Unit tests per system
         ├── physics_test.rs             # Physics system tests
@@ -68,7 +71,8 @@ stellar-dominion/
 
 #### `mod.rs` - Game State & EventBus
 - `GameState` - Central game state container
-  - Contains StartMenu component and current_mode field for mode switching
+  - Contains StartMenu component, SaveLoadDialog, and current_mode field for mode switching
+  - Contains GameInitializer for configurable new game creation
   - `pub fn new() -> GameResult<Self>` - Initializes in MainMenu mode
   - `pub fn fixed_update(&mut self, delta: f32) -> GameResult<()>` - Handles both menu and game updates
   - `pub fn queue_event(&mut self, event: GameEvent)`
@@ -77,6 +81,7 @@ stellar-dominion/
   - `pub fn load_game(&mut self) -> GameResult<()>`
   - `pub fn render(&mut self, interpolation: f32) -> GameResult<()>` - Mode-aware rendering
   - `pub fn process_queued_events_for_test(&mut self) -> GameResult<()>`
+  - Named save/load support with dialog integration
 - `EventBus` - Event routing system
   - `pub fn new() -> Self`
   - `pub fn subscribe(&mut self, system: SystemId, event_type: EventType)`
@@ -106,10 +111,14 @@ stellar-dominion/
   - `SetGameSpeed(f32)`
   - `PauseGame(bool)`
   - `SaveGame`
+  - `SaveGameAs(String)` - Save with custom name
   - `LoadGame`
+  - `LoadGameFrom(String)` - Load specific named save
   - `NewGame` - Start a new game (menu command)
+  - `NewGameNamed(String)` - Create new game with custom name
   - `ExitGame` - Exit the application (menu command)
   - `BackToMenu` - Return to main menu from in-game
+  - `GameOptions` - Cycle through game configuration presets
 - `SimulationEvent` - System-generated events
   - `TickCompleted(u64)`
   - `ResourcesProduced { planet: PlanetId, resources: ResourceBundle }`
@@ -150,6 +159,14 @@ stellar-dominion/
   - `pub fn dot(&self, other: &Vector2) -> f32`
 - `GameError` - Error handling enum
 - `GameMode` - Game state enum (MainMenu, InGame)
+- `GameConfiguration` - New game configuration settings
+  - `planet_count: usize` - Number of planets to create
+  - `starting_resources: ResourceBundle` - Initial resources for player
+  - `starting_population: i32` - Initial population on player planet
+  - `galaxy_size: GalaxySize` - Galaxy size preset
+  - `ai_opponents: usize` - Number of AI factions
+- `GalaxySize` - Galaxy size presets (Small, Medium, Large)
+  - `pub fn planet_range(&self) -> (usize, usize)` - Get planet count range
 - `Planet`, `Ship`, `Faction` - Core entity structures
 - Type aliases: `PlanetId`, `ShipId`, `FactionId`, `GameResult<T>`
 
@@ -290,13 +307,34 @@ stellar-dominion/
   - `pub fn new() -> Self`
   - `fn update(&mut self, delta: f32, events: &mut EventBus) -> GameResult<()>`
   - `fn handle_event(&mut self, event: &GameEvent) -> GameResult<()>`
-  - `pub fn save_game(&mut self, state: &GameState) -> GameResult<()>`
-  - `pub fn load_game(&mut self) -> GameResult<GameState>`
+  - `pub fn save_game(&self, state: &GameState) -> GameResult<()>`
+  - `pub fn save_game_to_slot(&self, state: &GameState, slot_name: &str) -> GameResult<()>`
+  - `pub fn load_game(&self) -> GameResult<SaveData>`
+  - `pub fn load_game_from_slot(&self, slot_name: &str) -> GameResult<SaveData>`
+  - `pub fn list_saves(&self) -> GameResult<Vec<SaveInfo>>` - List all available saves
+  - `pub fn save_exists(&self, slot_name: &str) -> bool`
+  - `pub fn delete_save(&self, slot_name: &str) -> GameResult<()>`
   - `pub fn validate_save_integrity(&self, save_data: &SaveData) -> GameResult<()>`
-  - `pub fn create_backup(&self) -> GameResult<()>`
-  - `pub fn get_save_metadata(&self) -> Option<SaveMetadata>`
-  - `pub fn quick_save(&mut self, state: &GameState) -> GameResult<()>`
   - Deterministic state preservation and validation
+- `SaveInfo` - Save file metadata
+  - `name: String` - Save file name
+  - `timestamp: u64` - Save creation time
+  - `tick: u64` - Game tick when saved
+  - `planets: usize` - Number of planets
+  - `ships: usize` - Number of ships
+  - `factions: usize` - Number of factions
+
+#### `game_initializer.rs` - Configurable Game Creation
+- `GameInitializer` - New game creation system
+  - `pub fn new(config: GameConfiguration) -> Self`
+  - `pub fn initialize_game(&self, planet_manager: &mut PlanetManager, ship_manager: &mut ShipManager, faction_manager: &mut FactionManager) -> GameResult<()>`
+  - `pub fn get_configuration(&self) -> &GameConfiguration`
+  - `pub fn set_configuration(&mut self, config: GameConfiguration)`
+  - Creates configurable new games with custom planet counts, resources, AI opponents
+  - Deterministic planet placement with varied orbital elements
+  - Faction setup with different AI personalities
+  - Starting ship placement and resource allocation
+  - Proper worker allocation with validation compliance
 
 ### User Interface (`src/ui/`) - IMPLEMENTED
 
@@ -353,12 +391,26 @@ stellar-dominion/
 #### `start_menu.rs` - Start Menu Component
 - `StartMenu` - Main menu state and rendering
   - `pub fn new() -> Self`
-  - `pub fn render(&mut self) -> GameResult<Vec<GameEvent>>`
+  - `pub fn render(&mut self, game_config: Option<&GameConfiguration>) -> GameResult<Vec<GameEvent>>`
   - `pub fn update_save_status(&mut self, save_exists: bool)`
-  - Main menu with New Game, Load Game, and Exit options
-  - Keyboard navigation support (arrow keys, enter/space)
-  - Mouse interaction with buttons
-  - Automatic save detection and Load Game button state
+  - `pub fn refresh_save_status(&mut self)` - **NEW**: Dynamically refresh save detection using SaveSystem
+  - `pub fn process_input(&mut self) -> GameResult<Vec<GameEvent>>`
+  - `fn check_for_saves() -> bool` - **ENHANCED**: Uses SaveSystem.list_saves() instead of hardcoded file checking
+  - Main menu with New Game, Load Game, Game Options, and Exit options
+
+
+#### `save_load_dialog.rs` - Save/Load Dialog System
+- `SaveLoadDialog` - Modal dialog for save/load operations
+  - `pub fn new() -> Self`
+  - `pub fn show_new_game_dialog(&mut self)`
+  - `pub fn show_save_dialog(&mut self)`
+  - `pub fn show_load_dialog(&mut self, saves: Vec<SaveInfo>)`
+  - `pub fn is_active(&self) -> bool`
+  - `pub fn close(&mut self)`
+  - `pub fn handle_input(&mut self) -> GameResult<Vec<GameEvent>>`
+  - `pub fn render(&mut self) -> GameResult<()>`
+  - Text input for game/save naming with validation
+- `DialogType` - Dialog mode enum (NewGame, SaveGame, LoadGame)
 
 #### `list_menus.rs` - Menu Components
 - Menu rendering functions
@@ -466,13 +518,25 @@ core/* → std only
 **✅ COMPLETE & OPERATIONAL:**
 - All core architecture and EventBus
 - All managers (Planet, Ship, Faction)
-- All systems (Resource, Population, Construction, Time, Physics, Combat, Save)
+- All systems (Resource, Population, Construction, Time, Physics, Combat, Save, GameInitializer)
 - Complete UI rendering with interactive panels
+- Save/Load dialog system with named saves
+- Main menu with configurable game options
+- Start menu with game configuration cycling
 - Comprehensive test suite (55+ tests passing)
+
+**🎯 NEW FEATURES ADDED:**
+- **Named Save System**: Save and load games with custom names
+- **Save Browser**: Interactive list of available saves with metadata
+- **Game Configuration**: Configurable new games with planet count, resources, AI opponents
+- **Galaxy Size Presets**: Small/Medium/Large configurations
+- **Game Naming**: Custom names for new games with auto-save
+- **Modal Dialogs**: Full-featured save/load/new game dialog system
+- **Enhanced Menu**: Game options cycling and configuration display
 
 **🎯 PERFORMANCE TARGETS:**
 - 30+ FPS with 20 planets, 100 ships
 - <10ms per system per tick
 - Deterministic save/load compatibility
 
-This structure represents the complete, operational codebase with all major systems implemented and tested.
+This structure represents the complete, operational codebase with all major systems implemented, tested, and enhanced with comprehensive save/load functionality and configurable game creation.

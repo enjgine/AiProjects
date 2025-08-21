@@ -19,6 +19,7 @@ pub mod population_system;
 pub mod construction;
 pub mod combat_resolver;
 pub mod save_system;
+pub mod game_initializer;
 
 // Re-export all systems for use in GameState
 pub use time_manager::TimeManager;
@@ -28,6 +29,7 @@ pub use population_system::PopulationSystem;
 pub use construction::ConstructionSystem;
 pub use combat_resolver::CombatResolver;
 pub use save_system::SaveSystem;
+pub use game_initializer::GameInitializer;
 
 // Ensure all systems implement the required GameSystem trait
 // This is enforced at compile time when systems are instantiated in GameState

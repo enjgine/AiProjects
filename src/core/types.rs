@@ -1,6 +1,7 @@
 // src/core/types.rs
 use std::fmt;
 use std::ops::{Add, Sub, AddAssign, SubAssign};
+use serde::{Serialize, Deserialize};
 
 // Core type aliases
 pub type GameResult<T> = Result<T, GameError>;
@@ -33,8 +34,14 @@ impl fmt::Display for GameError {
 
 impl std::error::Error for GameError {}
 
+impl From<std::io::Error> for GameError {
+    fn from(error: std::io::Error) -> Self {
+        GameError::SystemError(format!("I/O error: {}", error))
+    }
+}
+
 // Resource system
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct ResourceBundle {
     pub minerals: i32,
     pub food: i32,
@@ -156,7 +163,7 @@ pub enum ResourceType {
     Fuel,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResourceStorage {
     pub current: ResourceBundle,
     pub capacity: ResourceBundle,
@@ -191,14 +198,14 @@ impl ResourceStorage {
 }
 
 // Population system
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Demographics {
     pub total: i32,
     pub growth_rate: f32,
     pub allocation: WorkerAllocation,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WorkerAllocation {
     pub agriculture: i32,
     pub mining: i32,
@@ -227,7 +234,7 @@ impl WorkerAllocation {
 }
 
 // Buildings and construction
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BuildingType {
     Mine,
     Farm,
@@ -240,7 +247,7 @@ pub enum BuildingType {
     Habitat,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Building {
     pub building_type: BuildingType,
     pub tier: u8,
@@ -248,7 +255,7 @@ pub struct Building {
 }
 
 // Ships
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ShipClass {
     Scout,
     Transport,
@@ -256,7 +263,7 @@ pub enum ShipClass {
     Colony,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ship {
     pub id: ShipId,
     pub ship_class: ShipClass,
@@ -277,7 +284,7 @@ impl Ship {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CargoHold {
     pub resources: ResourceBundle,
     pub population: i32,
@@ -313,7 +320,7 @@ impl CargoHold {
 }
 
 // Physics
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Vector2 {
     pub x: f32,
     pub y: f32,
@@ -354,7 +361,7 @@ impl Vector2 {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct OrbitalElements {
     pub semi_major_axis: f32,  // AU
     pub period: f32,            // timesteps
@@ -371,7 +378,7 @@ impl Default for OrbitalElements {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Trajectory {
     pub origin: Vector2,
     pub destination: Vector2,
@@ -381,7 +388,7 @@ pub struct Trajectory {
 }
 
 // Planets
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Planet {
     pub id: PlanetId,
     pub position: OrbitalElements,
@@ -392,7 +399,7 @@ pub struct Planet {
 }
 
 // Factions
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Faction {
     pub id: FactionId,
     pub name: String,
@@ -401,7 +408,7 @@ pub struct Faction {
     pub score: i32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum AIPersonality {
     Aggressive,
     Balanced,
@@ -430,4 +437,50 @@ pub enum VictoryType {
 pub enum GameMode {
     MainMenu,
     InGame,
+}
+
+// Game initialization configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GameConfiguration {
+    pub planet_count: usize,
+    pub starting_resources: ResourceBundle,
+    pub starting_population: i32,
+    pub galaxy_size: GalaxySize,
+    pub ai_opponents: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum GalaxySize {
+    Small,   // 5-10 planets
+    Medium,  // 10-20 planets  
+    Large,   // 20-50 planets
+}
+
+impl Default for GameConfiguration {
+    fn default() -> Self {
+        Self {
+            planet_count: 3,
+            starting_resources: ResourceBundle {
+                minerals: 500,
+                food: 300,
+                energy: 200,
+                alloys: 50,
+                components: 25,
+                fuel: 100,
+            },
+            starting_population: 1000,
+            galaxy_size: GalaxySize::Small,
+            ai_opponents: 1,
+        }
+    }
+}
+
+impl GalaxySize {
+    pub fn planet_range(&self) -> (usize, usize) {
+        match self {
+            GalaxySize::Small => (5, 10),
+            GalaxySize::Medium => (10, 20),
+            GalaxySize::Large => (20, 50),
+        }
+    }
 }

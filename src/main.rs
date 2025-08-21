@@ -43,6 +43,19 @@ async fn main() -> GameResult<()> {
         
         accumulator += frame_time.min(FIXED_TIMESTEP * MAX_SUBSTEPS as f32);
         
+        // Check exit conditions BEFORE processing game input
+        // This prevents dialog escape from being processed twice
+        if (is_key_pressed(KeyCode::Escape) && !game_state.is_dialog_active()) || game_state.should_exit {
+            println!("Exit requested, shutting down game");
+            break;
+        }
+        
+        // Process input every frame for responsive controls
+        if let Err(e) = game_state.process_input() {
+            println!("Error in process_input: {:?}", e);
+            return Err(e);
+        }
+        
         // Process fixed timestep updates
         while accumulator >= FIXED_TIMESTEP {
             if let Err(e) = game_state.fixed_update(FIXED_TIMESTEP) {
@@ -57,12 +70,6 @@ async fn main() -> GameResult<()> {
         if let Err(e) = game_state.render(interpolation) {
             println!("Error in render: {:?}", e);
             return Err(e);
-        }
-        
-        // Exit conditions
-        if is_key_pressed(KeyCode::Escape) || game_state.should_exit {
-            println!("Exit requested, shutting down game");
-            break;
         }
         
         next_frame().await;

@@ -228,17 +228,29 @@ impl InputHandler {
         // Save/Load shortcuts with proper modifier key handling
         if self.is_ctrl_held() {
             if self.is_key_just_pressed(KeyCode::S) {
-                events.queue_event(GameEvent::PlayerCommand(PlayerCommand::SaveGame));
+                if is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift) {
+                    // Ctrl+Shift+S for Save As (always show dialog)
+                    events.queue_event(GameEvent::PlayerCommand(PlayerCommand::SaveGameDialog));
+                } else {
+                    // Ctrl+S for quick save to current name
+                    events.queue_event(GameEvent::PlayerCommand(PlayerCommand::SaveGame));
+                }
             }
             if self.is_key_just_pressed(KeyCode::L) {
                 events.queue_event(GameEvent::PlayerCommand(PlayerCommand::LoadGame));
             }
         }
         
-        // Clear selection with Escape
+        // Return to main menu with Escape (or clear selection if panels are open)
         if self.is_key_just_pressed(KeyCode::Escape) {
-            self.selected_planet = None;
-            self.selected_ship = None;
+            if self.selected_planet.is_some() || self.selected_ship.is_some() {
+                // First press clears selection
+                self.selected_planet = None;
+                self.selected_ship = None;
+            } else {
+                // Second press (or no selection) returns to menu
+                events.queue_event(GameEvent::PlayerCommand(PlayerCommand::BackToMenu));
+            }
         }
         
         // Delete selected ship (if any)

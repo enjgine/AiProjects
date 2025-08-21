@@ -18,6 +18,7 @@ pub mod panels;
 pub mod toolbar;
 pub mod list_menus;
 pub mod start_menu;
+pub mod save_load_dialog;
 
 // Future modules (planned architecture)
 // These will be implemented when needed:

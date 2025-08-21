@@ -1,6 +1,8 @@
 // src/ui/start_menu.rs
 use crate::core::{GameEvent, GameResult};
 use crate::core::events::PlayerCommand;
+use crate::core::types::*;
+use crate::systems::save_system::SaveSystem;
 use macroquad::prelude::*;
 
 pub struct StartMenu {
@@ -13,15 +15,27 @@ pub struct StartMenu {
 enum MenuButton {
     NewGame = 0,
     LoadGame = 1,
-    Exit = 2,
+    GameOptions = 2,
+    Exit = 3,
 }
 
 impl StartMenu {
     pub fn new() -> Self {
+        // Check for any save files using the proper save system
+        let save_exists = Self::check_for_saves();
         Self {
             selected_button: 0,
-            button_count: 3,
-            save_exists: false, // TODO: Check for save file existence
+            button_count: 4,
+            save_exists,
+        }
+    }
+    
+    /// Check if any save files exist using the save system
+    fn check_for_saves() -> bool {
+        let save_system = SaveSystem::new();
+        match save_system.list_saves() {
+            Ok(saves) => !saves.is_empty(),
+            Err(_) => false, // If we can't read saves, assume none exist
         }
     }
     
@@ -29,37 +43,47 @@ impl StartMenu {
         self.save_exists = save_exists;
     }
     
+    /// Refresh save status by checking the save system
+    pub fn refresh_save_status(&mut self) {
+        self.save_exists = Self::check_for_saves();
+    }
+    
     pub fn process_input(&mut self) -> GameResult<Vec<GameEvent>> {
         let mut events = Vec::new();
         
-        // Handle keyboard input
-        if is_key_pressed(KeyCode::Up) {
-            self.selected_button = if self.selected_button == 0 { 
-                self.button_count - 1 
-            } else { 
-                self.selected_button - 1 
-            };
-        }
-        
-        if is_key_pressed(KeyCode::Down) {
-            self.selected_button = (self.selected_button + 1) % self.button_count;
-        }
-        
-        if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space) {
-            match self.selected_button {
-                0 => events.push(GameEvent::PlayerCommand(PlayerCommand::NewGame)),
-                1 => if self.save_exists {
-                    events.push(GameEvent::PlayerCommand(PlayerCommand::LoadGame));
-                },
-                2 => events.push(GameEvent::PlayerCommand(PlayerCommand::ExitGame)),
-                _ => {}
+        // Skip input processing in test environments where macroquad isn't initialized
+        #[cfg(not(test))]
+        {
+            // Handle keyboard input
+            if is_key_pressed(KeyCode::Up) {
+                self.selected_button = if self.selected_button == 0 { 
+                    self.button_count - 1 
+                } else { 
+                    self.selected_button - 1 
+                };
+            }
+            
+            if is_key_pressed(KeyCode::Down) {
+                self.selected_button = (self.selected_button + 1) % self.button_count;
+            }
+            
+            if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::Space) {
+                match self.selected_button {
+                    0 => events.push(GameEvent::PlayerCommand(PlayerCommand::NewGame)),
+                    1 => if self.save_exists {
+                        events.push(GameEvent::PlayerCommand(PlayerCommand::LoadGame));
+                    },
+                    2 => events.push(GameEvent::PlayerCommand(PlayerCommand::GameOptions)),
+                    3 => events.push(GameEvent::PlayerCommand(PlayerCommand::ExitGame)),
+                    _ => {}
+                }
             }
         }
         
         Ok(events)
     }
     
-    pub fn render(&mut self) -> GameResult<Vec<GameEvent>> {
+    pub fn render(&mut self, game_config: Option<&GameConfiguration>) -> GameResult<Vec<GameEvent>> {
         let mut events = Vec::new();
         
         // Clear screen with dark background
@@ -108,11 +132,23 @@ impl StartMenu {
             }
         }
         
+        // Game Options button
+        let options_y = load_game_y + button_height + button_spacing;
+        let options_selected = self.selected_button == MenuButton::GameOptions as usize;
+        if self.draw_button("Game Options", button_x, options_y, button_width, button_height, options_selected) {
+            events.push(GameEvent::PlayerCommand(PlayerCommand::GameOptions));
+        }
+        
         // Exit button
-        let exit_y = load_game_y + button_height + button_spacing;
+        let exit_y = options_y + button_height + button_spacing;
         let exit_selected = self.selected_button == MenuButton::Exit as usize;
         if self.draw_button("Exit", button_x, exit_y, button_width, button_height, exit_selected) {
             events.push(GameEvent::PlayerCommand(PlayerCommand::ExitGame));
+        }
+        
+        // Draw game configuration info (if provided)
+        if let Some(config) = game_config {
+            self.draw_config_info(config);
         }
         
         // Draw version info
@@ -123,6 +159,33 @@ impl StartMenu {
         draw_text(version, version_x, version_y, version_font_size, GRAY);
         
         Ok(events)
+    }
+    
+    fn draw_config_info(&self, config: &GameConfiguration) {
+        let info_x = screen_width() - 300.0;
+        let info_y = 50.0;
+        let font_size = 14.0;
+        let line_height = 18.0;
+        
+        draw_text("Current Game Settings:", info_x, info_y, font_size, WHITE);
+        
+        let galaxy_size_text = match config.galaxy_size {
+            GalaxySize::Small => "Small Galaxy",
+            GalaxySize::Medium => "Medium Galaxy",
+            GalaxySize::Large => "Large Galaxy",
+        };
+        draw_text(galaxy_size_text, info_x, info_y + line_height, font_size, LIGHTGRAY);
+        
+        let planet_text = format!("{} Planets", config.planet_count);
+        draw_text(&planet_text, info_x, info_y + line_height * 2.0, font_size, LIGHTGRAY);
+        
+        let ai_text = format!("{} AI Opponents", config.ai_opponents);
+        draw_text(&ai_text, info_x, info_y + line_height * 3.0, font_size, LIGHTGRAY);
+        
+        let pop_text = format!("Start Population: {}", config.starting_population);
+        draw_text(&pop_text, info_x, info_y + line_height * 4.0, font_size, LIGHTGRAY);
+        
+        draw_text("(Press Game Options to change)", info_x, info_y + line_height * 6.0, 12.0, GRAY);
     }
     
     fn draw_button(&self, text: &str, x: f32, y: f32, width: f32, height: f32, selected: bool) -> bool {

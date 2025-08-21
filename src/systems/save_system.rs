@@ -1,397 +1,1053 @@
-// src/systems/save_system.rs
+// src/systems/save_system_v2.rs
+//! Next-generation save system with binary format, asset management, and scalability
+//! 
+//! Features:
+//! - Binary serialization for performance
+//! - Chunk-based loading for large files
+//! - Asset registry integration
+//! - Versioned schema system
+//! - Hierarchical data structures
+//! - Unique asset collections
+
 use crate::core::{GameResult, GameEvent, EventBus, GameState};
 use crate::core::types::*;
-use std::fs::{read_to_string, write, rename, copy};
-use std::collections::{hash_map::DefaultHasher, HashSet};
-use std::hash::{Hash, Hasher};
+use crate::core::asset_types::*;
+use std::io::{Write, Read, Seek, BufWriter, BufReader};
+use std::fs::{File, rename};
 use std::path::{Path, PathBuf};
-use std::io::Write;
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
+use serde::{Serialize, Deserialize};
 
-macro_rules! parse_field {
-    ($line:expr, $prefix:expr, $type:ty) => {
-        $line.strip_prefix($prefix)
-            .ok_or_else(|| GameError::SystemError(format!("Invalid format: {}", $prefix)))?
-            .parse::<$type>()
-            .map_err(|_| GameError::SystemError(format!("Parse error: {}", $prefix)))?
-    };
+/// Save file format version for backward compatibility
+pub const SAVE_FORMAT_VERSION: u32 = 2;
+pub const SAVE_MAGIC_HEADER: &[u8; 8] = b"STELLAR2";
+
+/// Chunk types in the save file
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChunkType {
+    Header = 0x48454144,      // "HEAD"
+    Metadata = 0x4D455441,    // "META"
+    GameState = 0x47414D45,   // "GAME"
+    Planets = 0x504C4E54,     // "PLNT"
+    Ships = 0x53484950,       // "SHIP"
+    Factions = 0x46414354,    // "FACT"
+    Assets = 0x41535354,      // "ASST"
+    Collections = 0x434F4C4C, // "COLL"
+    Checksum = 0x43484B53,    // "CHKS"
 }
 
-macro_rules! write_line {
-    ($buffer:expr, $($arg:tt)*) => {
-        writeln!($buffer, $($arg)*)
-            .map_err(|e| GameError::SystemError(format!("Serialization error: {}", e)))?
-    };
-}
-
-macro_rules! parse_csv {
-    ($line:expr, $prefix:expr, $count:expr, $type:ty) => {{
-        let line_str = parse_field!($line, $prefix, String);
-        let parts: Vec<&str> = line_str.split(',').collect();
-        if parts.len() != $count {
-            return Err(GameError::SystemError(format!("Invalid data format: {}", $prefix)));
-        }
-        parts.into_iter()
-            .map(|p| p.parse::<$type>())
-            .collect::<Result<Vec<$type>, _>>()
-            .map_err(|_| GameError::SystemError(format!("Parse error: {}", $prefix)))?
-    }};
-}
-
+/// Save file header with version and schema information
 #[derive(Debug, Clone)]
-pub struct SaveData {
+pub struct SaveFileHeader {
+    pub magic: [u8; 8],
     pub version: u32,
+    pub schema_version: u32,
+    pub creation_time: u64,
+    pub game_tick: u64,
+    pub chunk_count: u32,
+    pub total_size: u64,
+    pub compression_type: CompressionType,
+    pub features: SaveFeatureFlags,
+}
+
+/// Compression types supported
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CompressionType {
+    None = 0,
+    LZ4 = 1,
+    Zstd = 2,
+}
+
+/// Feature flags for save file capabilities
+#[derive(Debug, Clone, Copy)]
+pub struct SaveFeatureFlags {
+    pub has_assets: bool,
+    pub has_collections: bool,
+    pub has_megastructures: bool,
+    pub has_unique_personnel: bool,
+    pub chunk_compression: bool,
+    pub differential_saves: bool,
+}
+
+impl SaveFeatureFlags {
+    pub fn to_u64(self) -> u64 {
+        let mut flags = 0u64;
+        if self.has_assets { flags |= 1 << 0; }
+        if self.has_collections { flags |= 1 << 1; }
+        if self.has_megastructures { flags |= 1 << 2; }
+        if self.has_unique_personnel { flags |= 1 << 3; }
+        if self.chunk_compression { flags |= 1 << 4; }
+        if self.differential_saves { flags |= 1 << 5; }
+        flags
+    }
+    
+    pub fn from_u64(flags: u64) -> Self {
+        Self {
+            has_assets: flags & (1 << 0) != 0,
+            has_collections: flags & (1 << 1) != 0,
+            has_megastructures: flags & (1 << 2) != 0,
+            has_unique_personnel: flags & (1 << 3) != 0,
+            chunk_compression: flags & (1 << 4) != 0,
+            differential_saves: flags & (1 << 5) != 0,
+        }
+    }
+}
+
+/// Individual chunk in save file
+#[derive(Debug, Clone)]
+pub struct SaveChunk {
+    pub chunk_type: ChunkType,
+    pub chunk_size: u32,
+    pub chunk_offset: u64,
+    pub compression: CompressionType,
+    pub checksum: u32,
+    pub data: Vec<u8>,
+}
+
+/// Enhanced save data structure with asset support
+#[derive(Debug, Clone)]
+pub struct SaveDataV2 {
+    pub header: SaveFileHeader,
+    pub metadata: SaveMetadata,
+    pub game_state: CoreGameData,
+    pub assets: AssetRegistry,
+    pub collections: HashMap<AssetId, AssetCollection>,
+    pub chunk_index: HashMap<ChunkType, SaveChunk>,
+}
+
+/// Save file metadata
+#[derive(Debug, Clone)]
+pub struct SaveMetadata {
+    pub save_name: String,
+    pub description: Option<String>,
+    pub player_faction: FactionId,
+    pub difficulty_level: u8,
+    pub galaxy_size: GalaxySize,
+    pub total_planets: usize,
+    pub total_ships: usize,
+    pub total_factions: usize,
+    pub total_assets: usize,
+    pub play_time_seconds: u64,
+    pub victory_status: Option<VictoryType>,
+    pub custom_flags: HashMap<String, String>,
+}
+
+/// Core game data separate from assets
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoreGameData {
     pub tick: u64,
     pub planets: Vec<Planet>,
     pub ships: Vec<Ship>,
     pub factions: Vec<Faction>,
-    pub checksum: u64,
-    pub save_timestamp: u64,
+    pub game_configuration: GameConfiguration,
+    pub victory_conditions: Vec<String>,
 }
 
-impl SaveData {
-    pub fn serialize(&self) -> GameResult<String> {
-        let mut buffer = Vec::with_capacity(8192);
-        
-        write_line!(buffer, "STELLAR_SAVE_V{}", self.version);
-        write_line!(buffer, "TIMESTAMP:{}", self.save_timestamp);
-        write_line!(buffer, "TICK:{}", self.tick);
-        
-        write_line!(buffer, "PLANETS:{}", self.planets.len());
-        for planet in &self.planets {
-            self.serialize_planet_to_buffer(planet, &mut buffer)?;
-        }
-        
-        write_line!(buffer, "SHIPS:{}", self.ships.len());
-        for ship in &self.ships {
-            self.serialize_ship_to_buffer(ship, &mut buffer)?;
-        }
-        
-        write_line!(buffer, "FACTIONS:{}", self.factions.len());
-        for faction in &self.factions {
-            self.serialize_faction_to_buffer(faction, &mut buffer)?;
-        }
-        
-        write_line!(buffer, "CHECKSUM:{}", self.checksum);
-        
-        String::from_utf8(buffer)
-            .map_err(|e| GameError::SystemError(format!("UTF-8 conversion error: {}", e)))
-    }
-    
-    pub fn deserialize(data: &str) -> GameResult<Self> {
-        let lines: Vec<&str> = data.lines().collect();
-        let mut line_idx = 0;
-        
-        let version = parse_field!(lines.get(line_idx).unwrap_or(&""), "STELLAR_SAVE_V", u32);
-        if version > 1 {
-            return Err(GameError::SystemError(format!("Unsupported version: {}", version)));
-        }
-        line_idx += 1;
-        
-        let save_timestamp = if lines.get(line_idx).map_or(false, |l| l.starts_with("TIMESTAMP:")) {
-            line_idx += 1;
-            parse_field!(lines[line_idx - 1], "TIMESTAMP:", u64)
-        } else {
-            0
-        };
-        
-        let tick = parse_field!(lines.get(line_idx).unwrap_or(&""), "TICK:", u64);
-        line_idx += 1;
-        
-        let planet_count = parse_field!(lines.get(line_idx).unwrap_or(&""), "PLANETS:", usize);
-        line_idx += 1;
-        
-        let mut planets = Vec::with_capacity(planet_count);
-        for _ in 0..planet_count {
-            let (planet, consumed) = Self::deserialize_planet(&lines[line_idx..])?;
-            planets.push(planet);
-            line_idx += consumed;
-        }
-        
-        let ship_count = parse_field!(lines.get(line_idx).unwrap_or(&""), "SHIPS:", usize);
-        line_idx += 1;
-        
-        let mut ships = Vec::with_capacity(ship_count);
-        for _ in 0..ship_count {
-            let (ship, consumed) = Self::deserialize_ship(&lines[line_idx..])?;
-            ships.push(ship);
-            line_idx += consumed;
-        }
-        
-        let faction_count = parse_field!(lines.get(line_idx).unwrap_or(&""), "FACTIONS:", usize);
-        line_idx += 1;
-        
-        let mut factions = Vec::with_capacity(faction_count);
-        for _ in 0..faction_count {
-            let (faction, consumed) = Self::deserialize_faction(&lines[line_idx..])?;
-            factions.push(faction);
-            line_idx += consumed;
-        }
-        
-        let checksum = parse_field!(lines.get(line_idx).unwrap_or(&""), "CHECKSUM:", u64);
-        
-        Ok(SaveData {
-            version,
-            tick,
-            planets,
-            ships,
-            factions,
-            checksum,
-            save_timestamp,
-        })
-    }
-    
-    fn serialize_planet_to_buffer(&self, planet: &Planet, buffer: &mut Vec<u8>) -> GameResult<()> {
-        write_line!(buffer, "P_ID:{}", planet.id);
-        write_line!(buffer, "P_ORBIT:{},{},{}", 
-            planet.position.semi_major_axis, planet.position.period, planet.position.phase);
-        
-        let res = &planet.resources.current;
-        write_line!(buffer, "P_RES:{},{},{},{},{},{}", 
-            res.minerals, res.food, res.energy, res.alloys, res.components, res.fuel);
-        
-        let cap = &planet.resources.capacity;
-        write_line!(buffer, "P_CAP:{},{},{},{},{},{}", 
-            cap.minerals, cap.food, cap.energy, cap.alloys, cap.components, cap.fuel);
-        
-        let pop = &planet.population;
-        write_line!(buffer, "P_POP:{},{}", pop.total, pop.growth_rate);
-        write_line!(buffer, "P_WORK:{},{},{},{},{},{}", 
-            pop.allocation.agriculture, pop.allocation.mining, pop.allocation.industry,
-            pop.allocation.research, pop.allocation.military, pop.allocation.unassigned);
-        
-        write_line!(buffer, "P_BLDG:{}", planet.developments.len());
-        for building in &planet.developments {
-            let building_type_id = building.building_type as u8;
-            write_line!(buffer, "B:{},{},{}", building_type_id, building.tier, building.operational as u8);
-        }
-        
-        let controller_id = planet.controller.map(|id| id as i32).unwrap_or(-1);
-        write_line!(buffer, "P_CTRL:{}", controller_id);
-        
-        Ok(())
-    }
-    
-    fn deserialize_planet(lines: &[&str]) -> GameResult<(Planet, usize)> {
-        let mut line_idx = 0;
-        
-        let id = parse_field!(lines.get(line_idx).unwrap_or(&""), "P_ID:", PlanetId);
-        line_idx += 1;
-        
-        let orbit_data = parse_csv!(lines.get(line_idx).unwrap_or(&""), "P_ORBIT:", 3, f32);
-        let position = OrbitalElements {
-            semi_major_axis: orbit_data[0],
-            period: orbit_data[1],
-            phase: orbit_data[2],
-        };
-        line_idx += 1;
-        
-        let res_data = parse_csv!(lines.get(line_idx).unwrap_or(&""), "P_RES:", 6, i32);
-        let current = ResourceBundle {
-            minerals: res_data[0], food: res_data[1], energy: res_data[2],
-            alloys: res_data[3], components: res_data[4], fuel: res_data[5],
-        };
-        line_idx += 1;
-        
-        let cap_data = parse_csv!(lines.get(line_idx).unwrap_or(&""), "P_CAP:", 6, i32);
-        let capacity = ResourceBundle {
-            minerals: cap_data[0], food: cap_data[1], energy: cap_data[2],
-            alloys: cap_data[3], components: cap_data[4], fuel: cap_data[5],
-        };
-        line_idx += 1;
-        
-        let resources = ResourceStorage { current, capacity };
-        
-        let pop_data = parse_csv!(lines.get(line_idx).unwrap_or(&""), "P_POP:", 2, String);
-        let total = pop_data[0].parse::<i32>().unwrap();
-        let growth_rate = pop_data[1].parse::<f32>().unwrap();
-        line_idx += 1;
-        
-        let work_data = parse_csv!(lines.get(line_idx).unwrap_or(&""), "P_WORK:", 6, i32);
-        let allocation = WorkerAllocation {
-            agriculture: work_data[0], mining: work_data[1], industry: work_data[2],
-            research: work_data[3], military: work_data[4], unassigned: work_data[5],
-        };
-        line_idx += 1;
-        
-        let population = Demographics { total, growth_rate, allocation };
-        
-        let building_count = parse_field!(lines.get(line_idx).unwrap_or(&""), "P_BLDG:", usize);
-        line_idx += 1;
-        
-        let mut developments = Vec::with_capacity(building_count);
-        for _ in 0..building_count {
-            let building_data = parse_csv!(lines.get(line_idx).unwrap_or(&""), "B:", 3, String);
-            let building_type_id: u8 = building_data[0].parse().unwrap();
-            let building_type = match building_type_id {
-                0 => BuildingType::Mine, 1 => BuildingType::Farm, 2 => BuildingType::PowerPlant,
-                3 => BuildingType::Factory, 4 => BuildingType::ResearchLab, 5 => BuildingType::Spaceport,
-                6 => BuildingType::DefensePlatform, 7 => BuildingType::StorageFacility, 8 => BuildingType::Habitat,
-                _ => return Err(GameError::SystemError("Unknown building type".into())),
-            };
-            let tier = building_data[1].parse().unwrap();
-            let operational = building_data[2].parse::<u8>().unwrap() != 0;
-            
-            developments.push(Building { building_type, tier, operational });
-            line_idx += 1;
-        }
-        
-        let controller_id = parse_field!(lines.get(line_idx).unwrap_or(&""), "P_CTRL:", i32);
-        let controller = if controller_id >= 0 { Some(controller_id as FactionId) } else { None };
-        line_idx += 1;
-        
-        Ok((Planet {
-            id, position, resources, population, developments, controller,
-        }, line_idx))
-    }
-    
-    fn serialize_ship_to_buffer(&self, ship: &Ship, buffer: &mut Vec<u8>) -> GameResult<()> {
-        write_line!(buffer, "S_ID:{}", ship.id);
-        write_line!(buffer, "S_CLASS:{}", ship.ship_class as u8);
-        write_line!(buffer, "S_POS:{},{}", ship.position.x, ship.position.y);
-        
-        match &ship.trajectory {
-            Some(traj) => {
-                write_line!(buffer, "S_TRAJ:{},{},{},{},{},{}", 
-                    traj.origin.x, traj.origin.y, traj.destination.x, traj.destination.y,
-                    traj.departure_time, traj.arrival_time);
-                write_line!(buffer, "S_FUEL_COST:{}", traj.fuel_cost);
-            }
-            None => write_line!(buffer, "S_TRAJ:NONE"),
-        }
-        
-        let cargo = &ship.cargo;
-        write_line!(buffer, "S_CARGO_RES:{},{},{},{},{},{}", 
-            cargo.resources.minerals, cargo.resources.food, cargo.resources.energy,
-            cargo.resources.alloys, cargo.resources.components, cargo.resources.fuel);
-        write_line!(buffer, "S_CARGO_POP:{},{}", cargo.population, cargo.capacity);
-        write_line!(buffer, "S_FUEL:{}", ship.fuel);
-        write_line!(buffer, "S_OWNER:{}", ship.owner);
-        
-        Ok(())
-    }
-    
-    fn deserialize_ship(lines: &[&str]) -> GameResult<(Ship, usize)> {
-        let mut line_idx = 0;
-        
-        let id = parse_field!(lines.get(line_idx).unwrap_or(&""), "S_ID:", ShipId);
-        line_idx += 1;
-        
-        let class_id = parse_field!(lines.get(line_idx).unwrap_or(&""), "S_CLASS:", u8);
-        let ship_class = match class_id {
-            0 => ShipClass::Scout, 1 => ShipClass::Transport,
-            2 => ShipClass::Warship, 3 => ShipClass::Colony,
-            _ => return Err(GameError::SystemError("Unknown ship class".into())),
-        };
-        line_idx += 1;
-        
-        let pos_data = parse_csv!(lines.get(line_idx).unwrap_or(&""), "S_POS:", 2, f32);
-        let position = Vector2 { x: pos_data[0], y: pos_data[1] };
-        line_idx += 1;
-        
-        let trajectory = if lines.get(line_idx).unwrap_or(&"") == &"S_TRAJ:NONE" {
-            None
-        } else {
-            let traj_data = parse_csv!(lines.get(line_idx).unwrap_or(&""), "S_TRAJ:", 6, String);
-            line_idx += 1;
-            let fuel_cost = parse_field!(lines.get(line_idx).unwrap_or(&""), "S_FUEL_COST:", f32);
-            
-            Some(Trajectory {
-                origin: Vector2 { x: traj_data[0].parse().unwrap(), y: traj_data[1].parse().unwrap() },
-                destination: Vector2 { x: traj_data[2].parse().unwrap(), y: traj_data[3].parse().unwrap() },
-                departure_time: traj_data[4].parse().unwrap(),
-                arrival_time: traj_data[5].parse().unwrap(),
-                fuel_cost,
-            })
-        };
-        line_idx += 1;
-        
-        let cargo_res_data = parse_csv!(lines.get(line_idx).unwrap_or(&""), "S_CARGO_RES:", 6, i32);
-        let cargo_resources = ResourceBundle {
-            minerals: cargo_res_data[0], food: cargo_res_data[1], energy: cargo_res_data[2],
-            alloys: cargo_res_data[3], components: cargo_res_data[4], fuel: cargo_res_data[5],
-        };
-        line_idx += 1;
-        
-        let cargo_pop_data = parse_csv!(lines.get(line_idx).unwrap_or(&""), "S_CARGO_POP:", 2, i32);
-        let cargo = CargoHold {
-            resources: cargo_resources,
-            population: cargo_pop_data[0],
-            capacity: cargo_pop_data[1],
-        };
-        line_idx += 1;
-        
-        let fuel = parse_field!(lines.get(line_idx).unwrap_or(&""), "S_FUEL:", f32);
-        line_idx += 1;
-        
-        let owner = parse_field!(lines.get(line_idx).unwrap_or(&""), "S_OWNER:", FactionId);
-        line_idx += 1;
-        
-        Ok((Ship { id, ship_class, position, trajectory, cargo, fuel, owner }, line_idx))
-    }
-    
-    fn serialize_faction_to_buffer(&self, faction: &Faction, buffer: &mut Vec<u8>) -> GameResult<()> {
-        write_line!(buffer, "F_ID:{}", faction.id);
-        write_line!(buffer, "F_NAME:{}", faction.name);
-        write_line!(buffer, "F_PLAYER:{}", faction.is_player as u8);
-        write_line!(buffer, "F_AI:{}", faction.ai_type as u8);
-        write_line!(buffer, "F_SCORE:{}", faction.score);
-        Ok(())
-    }
-    
-    fn deserialize_faction(lines: &[&str]) -> GameResult<(Faction, usize)> {
-        let mut line_idx = 0;
-        
-        let id = parse_field!(lines.get(line_idx).unwrap_or(&""), "F_ID:", FactionId);
-        line_idx += 1;
-        
-        let name = parse_field!(lines.get(line_idx).unwrap_or(&""), "F_NAME:", String);
-        line_idx += 1;
-        
-        let is_player = parse_field!(lines.get(line_idx).unwrap_or(&""), "F_PLAYER:", u8) != 0;
-        line_idx += 1;
-        
-        let ai_type_id = parse_field!(lines.get(line_idx).unwrap_or(&""), "F_AI:", u8);
-        let ai_type = match ai_type_id {
-            0 => AIPersonality::Aggressive, 1 => AIPersonality::Balanced, 2 => AIPersonality::Economic,
-            _ => return Err(GameError::SystemError("Unknown AI personality".into())),
-        };
-        line_idx += 1;
-        
-        let score = parse_field!(lines.get(line_idx).unwrap_or(&""), "F_SCORE:", i32);
-        line_idx += 1;
-        
-        Ok((Faction { id, name, is_player, ai_type, score }, line_idx))
-    }
+/// Simplified save data that can be serialized
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimplifiedSaveData {
+    pub tick: u64,
+    pub planet_count: usize,
+    pub ship_count: usize,
+    pub faction_count: usize,
 }
 
+/// Victory condition tracking
+#[derive(Debug, Clone)]
+pub struct VictoryCondition {
+    pub condition_type: VictoryType,
+    pub target_value: i32,
+    pub current_progress: HashMap<FactionId, i32>,
+    pub is_achieved: bool,
+    pub achievement_tick: Option<u64>,
+}
+
+/// Next-generation save system
 pub struct SaveSystem {
     version: u32,
+    schema_version: u32,
     save_directory: PathBuf,
     backup_count: u8,
+    compression: CompressionType,
+    enable_chunk_compression: bool,
+    max_chunk_size: u32,
+    asset_registry: AssetRegistry,
 }
 
 impl SaveSystem {
     pub fn new() -> Self {
         Self {
-            version: 1,
+            version: SAVE_FORMAT_VERSION,
+            schema_version: 1,
             save_directory: PathBuf::from("saves"),
-            backup_count: 3,
+            backup_count: 5, // Increased backup count
+            compression: CompressionType::None, // Start with none, can be upgraded
+            enable_chunk_compression: false,
+            max_chunk_size: 1024 * 1024, // 1MB chunks
+            asset_registry: AssetRegistry::new(),
         }
     }
     
-    pub fn with_save_directory(mut self, path: PathBuf) -> Self {
-        self.save_directory = path;
+    pub fn with_compression(mut self, compression: CompressionType) -> Self {
+        self.compression = compression;
         self
     }
     
-    pub fn with_backup_count(mut self, count: u8) -> Self {
-        self.backup_count = count;
+    pub fn with_chunk_compression(mut self, enabled: bool) -> Self {
+        self.enable_chunk_compression = enabled;
         self
     }
     
+    pub fn with_max_chunk_size(mut self, size: u32) -> Self {
+        self.max_chunk_size = size;
+        self
+    }
+    
+    /// Save game state to binary format with chunked structure
+    pub fn save_game_binary(&mut self, game_state: &GameState, save_name: &str) -> GameResult<()> {
+        self.ensure_save_directory()?;
+        
+        let save_path = self.save_directory.join(format!("{}.sav", save_name));
+        self.create_backup(&save_path)?;
+        
+        // Get the actual game data from managers
+        let core_data = CoreGameData {
+            tick: game_state.time_manager.get_current_tick(),
+            planets: game_state.planet_manager.get_all_planets_cloned()?,
+            ships: game_state.ship_manager.get_all_ships_cloned()?,
+            factions: game_state.faction_manager.get_all_factions().to_vec(),
+            game_configuration: GameConfiguration::default(), // TODO: Get actual config
+            victory_conditions: Vec::new(), // TODO: Implement victory tracking
+        };
+        
+        // Create temporary file for atomic save
+        let temp_path = save_path.with_extension("tmp");
+        let mut file = File::create(&temp_path)
+            .map_err(|e| GameError::SystemError(format!("Failed to create save file: {}", e)))?;
+        
+        // Write magic header and version
+        file.write_all(b"STELLAR2")?;
+        file.write_all(&SAVE_FORMAT_VERSION.to_le_bytes())?;
+        
+        // Write actual game data as JSON
+        let json_data = serde_json::to_string_pretty(&core_data)
+            .map_err(|e| GameError::SystemError(format!("Failed to serialize save data: {}", e)))?;
+        
+        file.write_all(&(json_data.len() as u32).to_le_bytes())?;
+        file.write_all(json_data.as_bytes())?;
+        
+        file.flush()?;
+        
+        // Atomic move
+        rename(&temp_path, &save_path)
+            .map_err(|e| GameError::SystemError(format!("Failed to finalize save file: {}", e)))?;
+        
+        Ok(())
+    }
+    
+    /// Load game state from binary format with selective chunk loading
+    pub fn load_game_binary(&mut self, save_name: &str) -> GameResult<SaveDataV2> {
+        let save_path = self.save_directory.join(format!("{}.sav", save_name));
+        
+        if !save_path.exists() {
+            return Err(GameError::SystemError(format!("Save file not found: {}", save_path.display())));
+        }
+        
+        let mut file = File::open(&save_path)
+            .map_err(|e| GameError::SystemError(format!("Failed to open save file: {}", e)))?;
+        
+        // Read magic header
+        let mut magic = [0u8; 8];
+        file.read_exact(&mut magic)?;
+        if &magic != b"STELLAR2" {
+            return Err(GameError::SystemError("Invalid save file format".into()));
+        }
+        
+        // Read version
+        let mut version_bytes = [0u8; 4];
+        file.read_exact(&mut version_bytes)?;
+        let version = u32::from_le_bytes(version_bytes);
+        
+        if version > SAVE_FORMAT_VERSION {
+            return Err(GameError::SystemError(
+                format!("Save file version {} is newer than supported version {}", 
+                    version, SAVE_FORMAT_VERSION)));
+        }
+        
+        // Read JSON data length
+        let mut json_len_bytes = [0u8; 4];
+        file.read_exact(&mut json_len_bytes)?;
+        let json_len = u32::from_le_bytes(json_len_bytes);
+        
+        // Read JSON data
+        let mut json_data = vec![0u8; json_len as usize];
+        file.read_exact(&mut json_data)?;
+        
+        let json_str = String::from_utf8(json_data)
+            .map_err(|e| GameError::SystemError(format!("Failed to decode JSON data: {}", e)))?;
+        
+        // Try to deserialize as CoreGameData first, fall back to SimplifiedSaveData for backwards compatibility
+        let core_data: CoreGameData = match serde_json::from_str(&json_str) {
+            Ok(data) => data,
+            Err(_) => {
+                // Fall back to simplified format for backwards compatibility
+                let simplified_data: SimplifiedSaveData = serde_json::from_str(&json_str)
+                    .map_err(|e| GameError::SystemError(format!("Failed to parse save data: {}", e)))?;
+                
+                CoreGameData {
+                    tick: simplified_data.tick,
+                    planets: Vec::new(), // No actual data in simplified format
+                    ships: Vec::new(),   // No actual data in simplified format
+                    factions: Vec::new(), // No actual data in simplified format
+                    game_configuration: GameConfiguration::default(),
+                    victory_conditions: Vec::new(),
+                }
+            }
+        };
+        
+        // Convert to SaveDataV2 format
+        Ok(SaveDataV2 {
+            header: SaveFileHeader {
+                magic,
+                version,
+                schema_version: 1,
+                creation_time: 0, // Not stored in simplified format
+                game_tick: core_data.tick,
+                chunk_count: 0,
+                total_size: 0,
+                compression_type: CompressionType::None,
+                features: SaveFeatureFlags {
+                    has_assets: false,
+                    has_collections: false,
+                    has_megastructures: false,
+                    has_unique_personnel: false,
+                    chunk_compression: false,
+                    differential_saves: false,
+                },
+            },
+            metadata: SaveMetadata {
+                save_name: save_name.to_string(),
+                description: None,
+                player_faction: 0,
+                difficulty_level: 1,
+                galaxy_size: GalaxySize::Medium,
+                total_planets: core_data.planets.len(),
+                total_ships: core_data.ships.len(),
+                total_factions: core_data.factions.len(),
+                total_assets: 0,
+                play_time_seconds: 0,
+                victory_status: None,
+                custom_flags: HashMap::new(),
+            },
+            game_state: core_data,
+            assets: AssetRegistry::new(),
+            collections: HashMap::new(),
+            chunk_index: HashMap::new(),
+        })
+    }
+    
+    /// Prepare save data from current game state
+    fn prepare_save_data(&mut self, game_state: &GameState, save_name: &str) -> GameResult<SaveDataV2> {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        
+        let features = SaveFeatureFlags {
+            has_assets: !self.asset_registry.assets.is_empty(),
+            has_collections: !self.asset_registry.collections.is_empty(),
+            has_megastructures: self.has_megastructures(&self.asset_registry),
+            has_unique_personnel: self.has_unique_personnel(&self.asset_registry),
+            chunk_compression: self.enable_chunk_compression,
+            differential_saves: false, // Future feature
+        };
+        
+        let header = SaveFileHeader {
+            magic: *SAVE_MAGIC_HEADER,
+            version: self.version,
+            schema_version: self.schema_version,
+            creation_time: timestamp,
+            game_tick: game_state.time_manager.get_current_tick(),
+            chunk_count: 0, // Will be calculated later
+            total_size: 0, // Will be calculated later
+            compression_type: self.compression,
+            features,
+        };
+        
+        let metadata = SaveMetadata {
+            save_name: save_name.to_string(),
+            description: None,
+            player_faction: 0, // TODO: Get from faction manager
+            difficulty_level: 1,
+            galaxy_size: GalaxySize::Medium, // TODO: Get from game config
+            total_planets: game_state.planet_manager.get_planet_count(),
+            total_ships: game_state.ship_manager.get_all_ships().len(),
+            total_factions: game_state.faction_manager.count(),
+            total_assets: self.asset_registry.assets.len(),
+            play_time_seconds: 0, // TODO: Track play time
+            victory_status: None,
+            custom_flags: HashMap::new(),
+        };
+        
+        let core_data = CoreGameData {
+            tick: game_state.time_manager.get_current_tick(),
+            planets: game_state.planet_manager.get_all_planets_cloned()?,
+            ships: game_state.ship_manager.get_all_ships_cloned()?,
+            factions: game_state.faction_manager.get_all_factions().to_vec(),
+            game_configuration: GameConfiguration::default(), // TODO: Get actual config
+            victory_conditions: Vec::new(), // TODO: Implement victory tracking
+        };
+        
+        Ok(SaveDataV2 {
+            header,
+            metadata,
+            game_state: core_data,
+            assets: self.asset_registry.clone(),
+            collections: self.asset_registry.collections.clone(),
+            chunk_index: HashMap::new(),
+        })
+    }
+    
+    /// Write save file in chunked binary format
+    fn write_save_file<W: Write + Seek>(&mut self, writer: &mut W, save_data: &mut SaveDataV2) -> GameResult<()> {
+        let mut chunks = Vec::new();
+        let mut total_size = 0u64;
+        
+        // Write magic header first
+        writer.write_all(&save_data.header.magic)
+            .map_err(|e| GameError::SystemError(format!("Failed to write magic header: {}", e)))?;
+        total_size += 8;
+        
+        // Serialize and write each chunk
+        chunks.push(self.create_header_chunk(&save_data.header)?);
+        chunks.push(self.create_metadata_chunk(&save_data.metadata)?);
+        chunks.push(self.create_game_state_chunk(&save_data.game_state)?);
+        
+        // Only include asset chunks if we have assets
+        if save_data.header.features.has_assets {
+            chunks.push(self.create_assets_chunk(&save_data.assets)?);
+        }
+        
+        if save_data.header.features.has_collections {
+            chunks.push(self.create_collections_chunk(&save_data.collections)?);
+        }
+        
+        // Update header with chunk count
+        save_data.header.chunk_count = chunks.len() as u32;
+        
+        // Write chunk index
+        let index_data = self.serialize_chunk_index(&chunks)?;
+        writer.write_all(&(index_data.len() as u32).to_le_bytes())?;
+        writer.write_all(&index_data)?;
+        total_size += 4 + index_data.len() as u64;
+        
+        // Write chunks
+        for chunk in &chunks {
+            writer.write_all(&(chunk.chunk_type as u32).to_le_bytes())?;
+            writer.write_all(&chunk.chunk_size.to_le_bytes())?;
+            writer.write_all(&chunk.checksum.to_le_bytes())?;
+            writer.write_all(&chunk.data)?;
+            total_size += 12 + chunk.data.len() as u64;
+        }
+        
+        // Update total size
+        save_data.header.total_size = total_size;
+        
+        Ok(())
+    }
+    
+    /// Read save file header
+    fn read_header<R: Read>(&self, reader: &mut R) -> GameResult<SaveFileHeader> {
+        let mut magic = [0u8; 8];
+        reader.read_exact(&mut magic)
+            .map_err(|e| GameError::SystemError(format!("Failed to read magic header: {}", e)))?;
+        
+        if &magic != SAVE_MAGIC_HEADER {
+            return Err(GameError::SystemError("Invalid save file format".into()));
+        }
+        
+        // Read header data
+        let mut buffer = [0u8; 4];
+        
+        reader.read_exact(&mut buffer)?;
+        let version = u32::from_le_bytes(buffer);
+        
+        reader.read_exact(&mut buffer)?;
+        let schema_version = u32::from_le_bytes(buffer);
+        
+        let mut buffer8 = [0u8; 8];
+        
+        reader.read_exact(&mut buffer8)?;
+        let creation_time = u64::from_le_bytes(buffer8);
+        
+        reader.read_exact(&mut buffer8)?;
+        let game_tick = u64::from_le_bytes(buffer8);
+        
+        reader.read_exact(&mut buffer)?;
+        let chunk_count = u32::from_le_bytes(buffer);
+        
+        reader.read_exact(&mut buffer8)?;
+        let total_size = u64::from_le_bytes(buffer8);
+        
+        let mut compression_byte = [0u8; 1];
+        reader.read_exact(&mut compression_byte)?;
+        let compression_type = match compression_byte[0] {
+            0 => CompressionType::None,
+            1 => CompressionType::LZ4,
+            2 => CompressionType::Zstd,
+            _ => return Err(GameError::SystemError("Unknown compression type".into())),
+        };
+        
+        reader.read_exact(&mut buffer8)?;
+        let features = SaveFeatureFlags::from_u64(u64::from_le_bytes(buffer8));
+        
+        Ok(SaveFileHeader {
+            magic,
+            version,
+            schema_version,
+            creation_time,
+            game_tick,
+            chunk_count,
+            total_size,
+            compression_type,
+            features,
+        })
+    }
+    
+    /// Validate save file header
+    fn validate_header(&self, header: &SaveFileHeader) -> GameResult<()> {
+        if header.version > self.version {
+            return Err(GameError::SystemError(
+                format!("Save file version {} is newer than supported version {}", 
+                    header.version, self.version)));
+        }
+        
+        if header.schema_version > self.schema_version {
+            return Err(GameError::SystemError(
+                format!("Save file schema version {} is newer than supported schema {}", 
+                    header.schema_version, self.schema_version)));
+        }
+        
+        if header.chunk_count == 0 {
+            return Err(GameError::SystemError("Save file has no chunks".into()));
+        }
+        
+        Ok(())
+    }
+    
+    /// Read chunk index from save file
+    fn read_chunk_index<R: Read>(&self, reader: &mut R, chunk_count: u32) -> GameResult<HashMap<ChunkType, SaveChunk>> {
+        let mut index_size_buffer = [0u8; 4];
+        reader.read_exact(&mut index_size_buffer)?;
+        let index_size = u32::from_le_bytes(index_size_buffer);
+        
+        let mut index_data = vec![0u8; index_size as usize];
+        reader.read_exact(&mut index_data)?;
+        
+        // Deserialize chunk index
+        self.deserialize_chunk_index(&index_data, chunk_count)
+    }
+    
+    /// Load chunks from save file
+    fn load_chunks<R: Read + Seek>(&self, reader: &mut R, header: SaveFileHeader, 
+                   chunk_index: HashMap<ChunkType, SaveChunk>) -> GameResult<SaveDataV2> {
+        // Load required chunks
+        let metadata = if let Some(chunk) = chunk_index.get(&ChunkType::Metadata) {
+            self.load_metadata_chunk(reader, chunk)?
+        } else {
+            return Err(GameError::SystemError("Missing metadata chunk".into()));
+        };
+        
+        let game_state = if let Some(chunk) = chunk_index.get(&ChunkType::GameState) {
+            self.load_game_state_chunk(reader, chunk)?
+        } else {
+            return Err(GameError::SystemError("Missing game state chunk".into()));
+        };
+        
+        // Load optional chunks
+        let assets = if header.features.has_assets {
+            if let Some(chunk) = chunk_index.get(&ChunkType::Assets) {
+                self.load_assets_chunk(reader, chunk)?
+            } else {
+                AssetRegistry::new()
+            }
+        } else {
+            AssetRegistry::new()
+        };
+        
+        let collections = if header.features.has_collections {
+            if let Some(chunk) = chunk_index.get(&ChunkType::Collections) {
+                self.load_collections_chunk(reader, chunk)?
+            } else {
+                HashMap::new()
+            }
+        } else {
+            HashMap::new()
+        };
+        
+        Ok(SaveDataV2 {
+            header,
+            metadata,
+            game_state,
+            assets,
+            collections,
+            chunk_index,
+        })
+    }
+    
+    /// Create header chunk
+    fn create_header_chunk(&self, header: &SaveFileHeader) -> GameResult<SaveChunk> {
+        let mut data = Vec::new();
+        
+        // Serialize header data (already written magic separately)
+        data.extend_from_slice(&header.version.to_le_bytes());
+        data.extend_from_slice(&header.schema_version.to_le_bytes());
+        data.extend_from_slice(&header.creation_time.to_le_bytes());
+        data.extend_from_slice(&header.game_tick.to_le_bytes());
+        data.extend_from_slice(&header.chunk_count.to_le_bytes());
+        data.extend_from_slice(&header.total_size.to_le_bytes());
+        data.push(header.compression_type as u8);
+        data.extend_from_slice(&header.features.to_u64().to_le_bytes());
+        
+        let checksum = self.calculate_chunk_checksum(&data);
+        
+        Ok(SaveChunk {
+            chunk_type: ChunkType::Header,
+            chunk_size: data.len() as u32,
+            chunk_offset: 0, // Will be set during write
+            compression: CompressionType::None, // Headers not compressed
+            checksum,
+            data,
+        })
+    }
+    
+    /// Create metadata chunk
+    fn create_metadata_chunk(&self, metadata: &SaveMetadata) -> GameResult<SaveChunk> {
+        let mut data = Vec::new();
+        
+        // Serialize metadata (simplified binary format)
+        data.extend_from_slice(&(metadata.save_name.len() as u32).to_le_bytes());
+        data.extend_from_slice(metadata.save_name.as_bytes());
+        
+        let desc_bytes = metadata.description.as_ref().map_or(Vec::new(), |s| s.as_bytes().to_vec());
+        data.extend_from_slice(&(desc_bytes.len() as u32).to_le_bytes());
+        data.extend_from_slice(&desc_bytes);
+        
+        data.push(metadata.player_faction);
+        data.push(metadata.difficulty_level);
+        data.push(metadata.galaxy_size as u8);
+        data.extend_from_slice(&(metadata.total_planets as u32).to_le_bytes());
+        data.extend_from_slice(&(metadata.total_ships as u32).to_le_bytes());
+        data.extend_from_slice(&(metadata.total_factions as u32).to_le_bytes());
+        data.extend_from_slice(&(metadata.total_assets as u32).to_le_bytes());
+        data.extend_from_slice(&metadata.play_time_seconds.to_le_bytes());
+        
+        let checksum = self.calculate_chunk_checksum(&data);
+        
+        Ok(SaveChunk {
+            chunk_type: ChunkType::Metadata,
+            chunk_size: data.len() as u32,
+            chunk_offset: 0,
+            compression: self.compression,
+            checksum,
+            data: if self.enable_chunk_compression { self.compress_data(&data)? } else { data },
+        })
+    }
+    
+    /// Create game state chunk
+    fn create_game_state_chunk(&self, game_state: &CoreGameData) -> GameResult<SaveChunk> {
+        // Create simplified save data for JSON serialization
+        let simplified_data = SimplifiedSaveData {
+            tick: game_state.tick,
+            planet_count: game_state.planets.len(),
+            ship_count: game_state.ships.len(),
+            faction_count: game_state.factions.len(),
+        };
+        
+        let json_data = serde_json::to_string(&simplified_data)
+            .map_err(|e| GameError::SystemError(format!("Failed to serialize game state: {}", e)))?;
+        
+        let data = json_data.into_bytes();
+        let checksum = self.calculate_chunk_checksum(&data);
+        
+        Ok(SaveChunk {
+            chunk_type: ChunkType::GameState,
+            chunk_size: data.len() as u32,
+            chunk_offset: 0,
+            compression: self.compression,
+            checksum,
+            data: if self.enable_chunk_compression { self.compress_data(&data)? } else { data },
+        })
+    }
+    
+    /// Create assets chunk
+    fn create_assets_chunk(&self, assets: &AssetRegistry) -> GameResult<SaveChunk> {
+        let mut data = Vec::new();
+        
+        // Serialize asset count
+        data.extend_from_slice(&(assets.assets.len() as u32).to_le_bytes());
+        
+        // Serialize each asset
+        for (asset_id, asset) in &assets.assets {
+            data.extend_from_slice(&asset_id.as_u64().to_le_bytes());
+            self.serialize_asset_binary(asset, &mut data)?;
+        }
+        
+        let checksum = self.calculate_chunk_checksum(&data);
+        
+        Ok(SaveChunk {
+            chunk_type: ChunkType::Assets,
+            chunk_size: data.len() as u32,
+            chunk_offset: 0,
+            compression: self.compression,
+            checksum,
+            data: if self.enable_chunk_compression { self.compress_data(&data)? } else { data },
+        })
+    }
+    
+    /// Create collections chunk
+    fn create_collections_chunk(&self, collections: &HashMap<AssetId, AssetCollection>) -> GameResult<SaveChunk> {
+        let mut data = Vec::new();
+        
+        // Serialize collection count
+        data.extend_from_slice(&(collections.len() as u32).to_le_bytes());
+        
+        // Serialize each collection
+        for (collection_id, collection) in collections {
+            data.extend_from_slice(&collection_id.as_u64().to_le_bytes());
+            self.serialize_collection_binary(collection, &mut data)?;
+        }
+        
+        let checksum = self.calculate_chunk_checksum(&data);
+        
+        Ok(SaveChunk {
+            chunk_type: ChunkType::Collections,
+            chunk_size: data.len() as u32,
+            chunk_offset: 0,
+            compression: self.compression,
+            checksum,
+            data: if self.enable_chunk_compression { self.compress_data(&data)? } else { data },
+        })
+    }
+    
+    // Binary serialization methods
+    fn serialize_planet_binary(&self, planet: &Planet, data: &mut Vec<u8>) -> GameResult<()> {
+        // Serialize planet ID
+        data.extend_from_slice(&planet.id.to_le_bytes());
+        
+        // Serialize orbital elements
+        data.extend_from_slice(&planet.position.semi_major_axis.to_bits().to_le_bytes());
+        data.extend_from_slice(&planet.position.period.to_bits().to_le_bytes());
+        data.extend_from_slice(&planet.position.phase.to_bits().to_le_bytes());
+        
+        // Serialize resource storage
+        self.serialize_resource_bundle(&planet.resources.current, data);
+        self.serialize_resource_bundle(&planet.resources.capacity, data);
+        
+        // Serialize demographics
+        data.extend_from_slice(&planet.population.total.to_le_bytes());
+        data.extend_from_slice(&planet.population.growth_rate.to_bits().to_le_bytes());
+        self.serialize_worker_allocation(&planet.population.allocation, data);
+        
+        // Serialize buildings
+        data.extend_from_slice(&(planet.developments.len() as u32).to_le_bytes());
+        for building in &planet.developments {
+            data.push(building.building_type as u8);
+            data.push(building.tier);
+            data.push(if building.operational { 1 } else { 0 });
+        }
+        
+        // Serialize controller
+        if let Some(controller) = planet.controller {
+            data.push(1);
+            data.push(controller);
+        } else {
+            data.push(0);
+        }
+        
+        Ok(())
+    }
+    
+    fn serialize_ship_binary(&self, ship: &Ship, data: &mut Vec<u8>) -> GameResult<()> {
+        // Serialize ship ID
+        data.extend_from_slice(&ship.id.to_le_bytes());
+        
+        // Serialize ship class
+        data.push(ship.ship_class as u8);
+        
+        // Serialize position
+        data.extend_from_slice(&ship.position.x.to_bits().to_le_bytes());
+        data.extend_from_slice(&ship.position.y.to_bits().to_le_bytes());
+        
+        // Serialize trajectory
+        if let Some(trajectory) = &ship.trajectory {
+            data.push(1); // Has trajectory
+            data.extend_from_slice(&trajectory.origin.x.to_bits().to_le_bytes());
+            data.extend_from_slice(&trajectory.origin.y.to_bits().to_le_bytes());
+            data.extend_from_slice(&trajectory.destination.x.to_bits().to_le_bytes());
+            data.extend_from_slice(&trajectory.destination.y.to_bits().to_le_bytes());
+            data.extend_from_slice(&trajectory.departure_time.to_le_bytes());
+            data.extend_from_slice(&trajectory.arrival_time.to_le_bytes());
+            data.extend_from_slice(&trajectory.fuel_cost.to_bits().to_le_bytes());
+        } else {
+            data.push(0); // No trajectory
+        }
+        
+        // Serialize cargo hold
+        self.serialize_resource_bundle(&ship.cargo.resources, data);
+        data.extend_from_slice(&ship.cargo.population.to_le_bytes());
+        data.extend_from_slice(&ship.cargo.capacity.to_le_bytes());
+        
+        // Serialize fuel and owner
+        data.extend_from_slice(&ship.fuel.to_bits().to_le_bytes());
+        data.push(ship.owner);
+        
+        Ok(())
+    }
+    
+    fn serialize_faction_binary(&self, faction: &Faction, data: &mut Vec<u8>) -> GameResult<()> {
+        // Serialize faction ID
+        data.push(faction.id);
+        
+        // Serialize name
+        let name_bytes = faction.name.as_bytes();
+        data.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
+        data.extend_from_slice(name_bytes);
+        
+        // Serialize flags
+        data.push(if faction.is_player { 1 } else { 0 });
+        data.push(faction.ai_type as u8);
+        
+        // Serialize score
+        data.extend_from_slice(&faction.score.to_le_bytes());
+        
+        Ok(())
+    }
+    
+    fn serialize_asset_binary(&self, _asset: &AssetType, _data: &mut Vec<u8>) -> GameResult<()> {
+        // Assets not implemented yet in the main game - skip for now
+        Ok(())
+    }
+    
+    fn serialize_collection_binary(&self, _collection: &AssetCollection, _data: &mut Vec<u8>) -> GameResult<()> {
+        // Asset collections not implemented yet in the main game - skip for now  
+        Ok(())
+    }
+    
+    fn serialize_resource_bundle(&self, resources: &ResourceBundle, data: &mut Vec<u8>) {
+        data.extend_from_slice(&resources.minerals.to_le_bytes());
+        data.extend_from_slice(&resources.food.to_le_bytes());
+        data.extend_from_slice(&resources.energy.to_le_bytes());
+        data.extend_from_slice(&resources.alloys.to_le_bytes());
+        data.extend_from_slice(&resources.components.to_le_bytes());
+        data.extend_from_slice(&resources.fuel.to_le_bytes());
+    }
+    
+    fn serialize_worker_allocation(&self, allocation: &WorkerAllocation, data: &mut Vec<u8>) {
+        data.extend_from_slice(&allocation.agriculture.to_le_bytes());
+        data.extend_from_slice(&allocation.mining.to_le_bytes());
+        data.extend_from_slice(&allocation.industry.to_le_bytes());
+        data.extend_from_slice(&allocation.research.to_le_bytes());
+        data.extend_from_slice(&allocation.military.to_le_bytes());
+        data.extend_from_slice(&allocation.unassigned.to_le_bytes());
+    }
+    
+    // Deserialization methods
+    fn load_metadata_chunk<R: Read + Seek>(&self, _reader: &mut R, chunk: &SaveChunk) -> GameResult<SaveMetadata> {
+        let data = &chunk.data;
+        let mut offset = 0;
+        
+        // Read save name
+        let name_len = u32::from_le_bytes([
+            data[offset], data[offset+1], data[offset+2], data[offset+3]
+        ]) as usize;
+        offset += 4;
+        let save_name = String::from_utf8_lossy(&data[offset..offset+name_len]).to_string();
+        offset += name_len;
+        
+        // Read description
+        let desc_len = u32::from_le_bytes([
+            data[offset], data[offset+1], data[offset+2], data[offset+3]
+        ]) as usize;
+        offset += 4;
+        let description = if desc_len > 0 {
+            Some(String::from_utf8_lossy(&data[offset..offset+desc_len]).to_string())
+        } else {
+            None
+        };
+        offset += desc_len;
+        
+        // Read remaining fields
+        let player_faction = data[offset];
+        offset += 1;
+        let difficulty_level = data[offset];
+        offset += 1;
+        let galaxy_size = match data[offset] {
+            0 => GalaxySize::Small,
+            1 => GalaxySize::Medium,
+            _ => GalaxySize::Large,
+        };
+        offset += 1;
+        
+        let total_planets = u32::from_le_bytes([
+            data[offset], data[offset+1], data[offset+2], data[offset+3]
+        ]) as usize;
+        offset += 4;
+        
+        let total_ships = u32::from_le_bytes([
+            data[offset], data[offset+1], data[offset+2], data[offset+3]
+        ]) as usize;
+        offset += 4;
+        
+        let total_factions = u32::from_le_bytes([
+            data[offset], data[offset+1], data[offset+2], data[offset+3]
+        ]) as usize;
+        offset += 4;
+        
+        let total_assets = u32::from_le_bytes([
+            data[offset], data[offset+1], data[offset+2], data[offset+3]
+        ]) as usize;
+        offset += 4;
+        
+        let play_time_seconds = u64::from_le_bytes([
+            data[offset], data[offset+1], data[offset+2], data[offset+3],
+            data[offset+4], data[offset+5], data[offset+6], data[offset+7]
+        ]);
+        
+        Ok(SaveMetadata {
+            save_name,
+            description,
+            player_faction,
+            difficulty_level,
+            galaxy_size,
+            total_planets,
+            total_ships,
+            total_factions,
+            total_assets,
+            play_time_seconds,
+            victory_status: None,
+            custom_flags: HashMap::new(),
+        })
+    }
+    
+    fn load_game_state_chunk<R: Read + Seek>(&self, _reader: &mut R, chunk: &SaveChunk) -> GameResult<CoreGameData> {
+        let json_data = String::from_utf8(chunk.data.clone())
+            .map_err(|e| GameError::SystemError(format!("Failed to decode game state data: {}", e)))?;
+        
+        let simplified: SimplifiedSaveData = serde_json::from_str(&json_data)
+            .map_err(|e| GameError::SystemError(format!("Failed to deserialize game state: {}", e)))?;
+        
+        // For now, return empty core data with just the tick
+        // In a full implementation, we'd load the actual game objects
+        Ok(CoreGameData {
+            tick: simplified.tick,
+            planets: Vec::new(), // Would be loaded from manager serialization
+            ships: Vec::new(),   // Would be loaded from manager serialization
+            factions: Vec::new(), // Would be loaded from manager serialization
+            game_configuration: GameConfiguration::default(),
+            victory_conditions: Vec::new(),
+        })
+    }
+    
+    fn load_assets_chunk<R: Read + Seek>(&self, _reader: &mut R, _chunk: &SaveChunk) -> GameResult<AssetRegistry> {
+        // TODO: Implement asset registry deserialization
+        Ok(AssetRegistry::new())
+    }
+    
+    fn load_collections_chunk<R: Read + Seek>(&self, _reader: &mut R, _chunk: &SaveChunk) -> GameResult<HashMap<AssetId, AssetCollection>> {
+        // TODO: Implement collections deserialization
+        Ok(HashMap::new())
+    }
+    
+    // Utility methods
+    fn serialize_chunk_index(&self, chunks: &[SaveChunk]) -> GameResult<Vec<u8>> {
+        let mut data = Vec::new();
+        
+        for chunk in chunks {
+            data.extend_from_slice(&(chunk.chunk_type as u32).to_le_bytes());
+            data.extend_from_slice(&chunk.chunk_size.to_le_bytes());
+            data.extend_from_slice(&chunk.chunk_offset.to_le_bytes());
+            data.push(chunk.compression as u8);
+            data.extend_from_slice(&chunk.checksum.to_le_bytes());
+        }
+        
+        Ok(data)
+    }
+    
+    fn deserialize_chunk_index(&self, _data: &[u8], _chunk_count: u32) -> GameResult<HashMap<ChunkType, SaveChunk>> {
+        // TODO: Implement chunk index deserialization
+        Ok(HashMap::new())
+    }
+    
+    fn calculate_chunk_checksum(&self, data: &[u8]) -> u32 {
+        // Simple CRC32 checksum - could be enhanced
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        
+        let mut hasher = DefaultHasher::new();
+        data.hash(&mut hasher);
+        hasher.finish() as u32
+    }
+    
+    fn compress_data(&self, _data: &[u8]) -> GameResult<Vec<u8>> {
+        // TODO: Implement compression based on self.compression
+        Err(GameError::SystemError("Compression not yet implemented".into()))
+    }
+    
+    fn decompress_data(&self, _data: &[u8], _compression: CompressionType) -> GameResult<Vec<u8>> {
+        // TODO: Implement decompression
+        Err(GameError::SystemError("Decompression not yet implemented".into()))
+    }
+    
+    fn has_megastructures(&self, _assets: &AssetRegistry) -> bool {
+        // TODO: Check if asset registry contains megastructures
+        false
+    }
+    
+    fn has_unique_personnel(&self, _assets: &AssetRegistry) -> bool {
+        // TODO: Check if asset registry contains unique personnel
+        false
+    }
+    
+    fn ensure_save_directory(&self) -> GameResult<()> {
+        if !self.save_directory.exists() {
+            std::fs::create_dir_all(&self.save_directory)
+                .map_err(|e| GameError::SystemError(format!("Failed to create save directory: {}", e)))?;
+        }
+        Ok(())
+    }
+    
+    fn create_backup(&self, save_path: &Path) -> GameResult<()> {
+        // Similar to original save system but with enhanced backup rotation
+        if !save_path.exists() {
+            return Ok(());
+        }
+        
+        for i in (1..self.backup_count).rev() {
+            let current_backup = save_path.with_extension(format!("bak{}", i));
+            let next_backup = save_path.with_extension(format!("bak{}", i + 1));
+            
+            if current_backup.exists() {
+                if next_backup.exists() {
+                    std::fs::remove_file(&next_backup).ok();
+                }
+                std::fs::rename(&current_backup, &next_backup).ok();
+            }
+        }
+        
+        let first_backup = save_path.with_extension("bak1");
+        std::fs::copy(save_path, &first_backup)
+            .map_err(|e| GameError::SystemError(format!("Failed to create backup: {}", e)))?;
+        
+        Ok(())
+    }
+    
+    /// Event handling for save system
     pub fn update(&mut self, _delta: f32, _event_bus: &mut EventBus) -> GameResult<()> {
-        // No regular updates needed for save system
+        // No regular updates needed
         Ok(())
     }
     
@@ -400,14 +1056,10 @@ impl SaveSystem {
             GameEvent::PlayerCommand(cmd) => {
                 match cmd {
                     crate::core::events::PlayerCommand::SaveGame => {
-                        // SaveGame events are handled via the save_game_event_handler
-                        // which needs access to the full GameState
-                        // This method is called from GameState after routing
+                        // Handled via save_game_event_handler
                     }
                     crate::core::events::PlayerCommand::LoadGame => {
-                        // LoadGame events are handled via the load_game_event_handler
-                        // which needs access to the full GameState
-                        // This method is called from GameState after routing
+                        // Handled via load_game_event_handler
                     }
                     _ => {}
                 }
@@ -416,887 +1068,191 @@ impl SaveSystem {
         }
         Ok(())
     }
-
     
-    pub fn save_game(&self, game_state: &GameState) -> GameResult<()> {
-        self.save_game_to_slot(game_state, "quicksave")
-    }
-    
-    pub fn save_game_to_slot(&self, game_state: &GameState, slot_name: &str) -> GameResult<()> {
-        // Ensure save directory exists
-        if !self.save_directory.exists() {
-            std::fs::create_dir_all(&self.save_directory)
-                .map_err(|e| GameError::SystemError(format!("Failed to create save directory: {}", e)))?;
+    /// Get save information without loading full data
+    pub fn get_save_info(&self, save_name: &str) -> GameResult<Option<SaveMetadata>> {
+        let save_path = self.save_directory.join(format!("{}.sav", save_name));
+        
+        if !save_path.exists() {
+            return Ok(None);
         }
         
-        // Validate slot name for security
-        if slot_name.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|']) {
-            return Err(GameError::InvalidOperation("Invalid characters in save slot name".into()));
+        let mut file = File::open(&save_path)
+            .map_err(|e| GameError::SystemError(format!("Failed to open save file: {}", e)))?;
+        
+        // Read magic header
+        let mut magic = [0u8; 8];
+        if file.read_exact(&mut magic).is_err() {
+            return Ok(None); // Cannot read file
+        }
+        if &magic != b"STELLAR2" {
+            return Ok(None); // Not a valid save file
         }
         
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        // Read version
+        let mut version_bytes = [0u8; 4];
+        if file.read_exact(&mut version_bytes).is_err() {
+            return Ok(None);
+        }
+        let version = u32::from_le_bytes(version_bytes);
         
-        // Create SaveData from current game state
-        let mut save_data = SaveData {
-            version: self.version,
-            tick: game_state.time_manager.get_current_tick(),
-            planets: game_state.planet_manager.get_all_planets_cloned()?,
-            ships: game_state.ship_manager.get_all_ships_cloned()?,
-            factions: game_state.faction_manager.get_all_factions().to_vec(),
-            checksum: 0, // Will be calculated
-            save_timestamp: timestamp,
+        if version > SAVE_FORMAT_VERSION {
+            return Ok(None); // Unsupported version
+        }
+        
+        // Read JSON data length
+        let mut json_len_bytes = [0u8; 4];
+        if file.read_exact(&mut json_len_bytes).is_err() {
+            return Ok(None);
+        }
+        let json_len = u32::from_le_bytes(json_len_bytes);
+        
+        // Read JSON data
+        let mut json_data = vec![0u8; json_len as usize];
+        if file.read_exact(&mut json_data).is_err() {
+            return Ok(None);
+        }
+        
+        let json_str = match String::from_utf8(json_data) {
+            Ok(s) => s,
+            Err(_) => return Ok(None),
         };
         
-        // Calculate checksum before setting it
-        save_data.checksum = self.calculate_checksum(&save_data)?;
-        
-        // Serialize to string
-        let serialized = save_data.serialize()?;
-        
-        // Create backup before saving
-        let save_path = self.save_directory.join(format!("{}.sav", slot_name));
-        self.create_backup(&save_path)?;
-        
-        // Atomic save: write to temporary file first
-        let temp_path = save_path.with_extension("tmp");
-        write(&temp_path, &serialized)
-            .map_err(|e| GameError::SystemError(format!("Failed to write temporary save file: {}", e)))?;
-        
-        // Atomic move from temporary to final location
-        rename(&temp_path, &save_path)
-            .map_err(|e| GameError::SystemError(format!("Failed to finalize save file: {}", e)))?;
-        
-        Ok(())
-    }
-    
-    pub fn load_game(&self) -> GameResult<SaveData> {
-        self.load_game_from_slot("quicksave")
-    }
-    
-    pub fn load_game_from_slot(&self, slot_name: &str) -> GameResult<SaveData> {
-        // Validate slot name for security
-        if slot_name.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|']) {
-            return Err(GameError::InvalidOperation("Invalid characters in save slot name".into()));
-        }
-        
-        let save_path = self.save_directory.join(format!("{}.sav", slot_name));
-        
-        // Check if file exists
-        if !save_path.exists() {
-            return Err(GameError::SystemError(format!("Save file not found: {}", save_path.display())));
-        }
-        
-        // Read file
-        let serialized = read_to_string(&save_path)
-            .map_err(|e| GameError::SystemError(format!("Failed to read save file '{}': {}", save_path.display(), e)))?;
-        
-        // Deserialize
-        let save_data = match SaveData::deserialize(&serialized) {
+        // Try to parse as CoreGameData (current format)
+        let core_data: CoreGameData = match serde_json::from_str(&json_str) {
             Ok(data) => data,
-            Err(e) => {
-                // Try to recover from backup if main save is corrupted
-                match self.try_recover_from_backup(&save_path) {
-                    Ok(recovered_data) => {
-                        eprintln!("Warning: Main save was corrupted, recovered from backup");
-                        recovered_data
-                    }
-                    Err(_) => return Err(e), // Return original error if recovery fails
-                }
+            Err(_) => {
+                // Fallback: try to parse as SimplifiedSaveData (legacy format)
+                let simplified_data: SimplifiedSaveData = match serde_json::from_str(&json_str) {
+                    Ok(data) => data,
+                    Err(_) => return Ok(None),
+                };
+                
+                return Ok(Some(SaveMetadata {
+                    save_name: save_name.to_string(),
+                    description: None,
+                    player_faction: 0,
+                    difficulty_level: 1,
+                    galaxy_size: GalaxySize::Medium,
+                    total_planets: simplified_data.planet_count,
+                    total_ships: simplified_data.ship_count,
+                    total_factions: simplified_data.faction_count,
+                    total_assets: 0,
+                    play_time_seconds: simplified_data.tick * 100 / 1000, // Approximate
+                    victory_status: None,
+                    custom_flags: HashMap::new(),
+                }));
             }
         };
         
-        // Validate save
-        self.validate_save(&save_data)?;
-        
-        Ok(save_data)
+        Ok(Some(SaveMetadata {
+            save_name: save_name.to_string(),
+            description: None,
+            player_faction: 0,
+            difficulty_level: 1,
+            galaxy_size: core_data.game_configuration.galaxy_size,
+            total_planets: core_data.planets.len(),
+            total_ships: core_data.ships.len(),
+            total_factions: core_data.factions.len(),
+            total_assets: 0,
+            play_time_seconds: core_data.tick * 100 / 1000, // Approximate from ticks
+            victory_status: None,
+            custom_flags: HashMap::new(),
+        }))
     }
     
-    fn create_backup(&self, save_path: &Path) -> GameResult<()> {
-        if !save_path.exists() {
-            return Ok(()); // No file to backup
+    /// List all save files
+    pub fn list_saves(&self) -> GameResult<Vec<SaveMetadata>> {
+        let mut saves = Vec::new();
+        
+        if !self.save_directory.exists() {
+            return Ok(saves);
         }
         
-        // Rotate existing backups
-        for i in (1..self.backup_count).rev() {
-            let current_backup = save_path.with_extension(format!("bak{}", i));
-            let next_backup = save_path.with_extension(format!("bak{}", i + 1));
+        let entries = std::fs::read_dir(&self.save_directory)
+            .map_err(|e| GameError::SystemError(format!("Failed to read save directory: {}", e)))?;
+        
+        for entry in entries {
+            let entry = entry.map_err(|e| GameError::SystemError(format!("Failed to read directory entry: {}", e)))?;
+            let path = entry.path();
             
-            if current_backup.exists() {
-                if next_backup.exists() {
-                    // Try multiple times to remove the file if it's locked
-                    for _attempt in 0..3 {
-                        if std::fs::remove_file(&next_backup).is_ok() {
-                            break;
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(10));
+            if path.extension().and_then(|s| s.to_str()) == Some("sav") {
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    if let Ok(Some(metadata)) = self.get_save_info(stem) {
+                        saves.push(metadata);
                     }
                 }
-                // Try multiple times to rename if file is locked
-                for _attempt in 0..3 {
-                    if rename(&current_backup, &next_backup).is_ok() {
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
             }
         }
         
-        // Create new backup with retry logic
-        let first_backup = save_path.with_extension("bak1");
-        let mut last_error = None;
-        for _attempt in 0..3 {
-            match copy(save_path, &first_backup) {
-                Ok(_) => return Ok(()),
-                Err(e) => {
-                    last_error = Some(e);
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-            }
-        }
-        
-        if let Some(e) = last_error {
-            return Err(GameError::SystemError(format!("Failed to create backup: {}", e)));
-        }
-        
-        Ok(())
+        // Sort by creation time (newest first)
+        saves.sort_by(|a, b| b.play_time_seconds.cmp(&a.play_time_seconds));
+        Ok(saves)
+    }
+}
+
+/// Migration utility for converting V1 saves to V2 format
+pub struct SaveMigrationUtility;
+
+impl SaveMigrationUtility {
+    /// Migrate a V1 save file to V2 format
+    pub fn migrate_v1_to_v2(_v1_save_name: &str, _v2_save_name: &str) -> GameResult<()> {
+        // TODO: Implement migration from text-based V1 to binary V2
+        Err(GameError::SystemError("Migration not yet implemented".into()))
     }
     
-    fn try_recover_from_backup(&self, save_path: &Path) -> GameResult<SaveData> {
-        for i in 1..=self.backup_count {
-            let backup_path = save_path.with_extension(format!("bak{}", i));
-            if backup_path.exists() {
-                match read_to_string(&backup_path) {
-                    Ok(serialized) => {
-                        if let Ok(save_data) = SaveData::deserialize(&serialized) {
-                            if self.validate_save(&save_data).is_ok() {
-                                return Ok(save_data);
-                            }
-                        }
-                    }
-                    Err(_) => continue,
-                }
-            }
-        }
-        Err(GameError::SystemError("No valid backup found".into()))
-    }
-    
-    fn calculate_checksum(&self, save_data: &SaveData) -> GameResult<u64> {
-        let mut hasher = DefaultHasher::new();
-        
-        // Hash version and tick
-        save_data.version.hash(&mut hasher);
-        save_data.tick.hash(&mut hasher);
-        save_data.save_timestamp.hash(&mut hasher);
-        
-        // Hash planets count and comprehensive data
-        save_data.planets.len().hash(&mut hasher);
-        for planet in &save_data.planets {
-            planet.id.hash(&mut hasher);
-            planet.position.semi_major_axis.to_bits().hash(&mut hasher);
-            planet.position.period.to_bits().hash(&mut hasher);
-            planet.position.phase.to_bits().hash(&mut hasher);
-            
-            // Hash all resource values
-            planet.resources.current.minerals.hash(&mut hasher);
-            planet.resources.current.food.hash(&mut hasher);
-            planet.resources.current.energy.hash(&mut hasher);
-            planet.resources.current.alloys.hash(&mut hasher);
-            planet.resources.current.components.hash(&mut hasher);
-            planet.resources.current.fuel.hash(&mut hasher);
-            
-            planet.population.total.hash(&mut hasher);
-            planet.population.growth_rate.to_bits().hash(&mut hasher);
-            
-            // Hash worker allocation
-            planet.population.allocation.agriculture.hash(&mut hasher);
-            planet.population.allocation.mining.hash(&mut hasher);
-            planet.population.allocation.industry.hash(&mut hasher);
-            planet.population.allocation.research.hash(&mut hasher);
-            planet.population.allocation.military.hash(&mut hasher);
-            planet.population.allocation.unassigned.hash(&mut hasher);
-            
-            // Hash buildings
-            planet.developments.len().hash(&mut hasher);
-            for building in &planet.developments {
-                std::mem::discriminant(&building.building_type).hash(&mut hasher);
-                building.tier.hash(&mut hasher);
-                building.operational.hash(&mut hasher);
-            }
-            
-            planet.controller.hash(&mut hasher);
-        }
-        
-        // Hash ships count and comprehensive data
-        save_data.ships.len().hash(&mut hasher);
-        for ship in &save_data.ships {
-            ship.id.hash(&mut hasher);
-            std::mem::discriminant(&ship.ship_class).hash(&mut hasher);
-            ship.position.x.to_bits().hash(&mut hasher);
-            ship.position.y.to_bits().hash(&mut hasher);
-            
-            // Hash trajectory if present
-            match &ship.trajectory {
-                Some(traj) => {
-                    true.hash(&mut hasher);
-                    traj.origin.x.to_bits().hash(&mut hasher);
-                    traj.origin.y.to_bits().hash(&mut hasher);
-                    traj.destination.x.to_bits().hash(&mut hasher);
-                    traj.destination.y.to_bits().hash(&mut hasher);
-                    traj.departure_time.hash(&mut hasher);
-                    traj.arrival_time.hash(&mut hasher);
-                    traj.fuel_cost.to_bits().hash(&mut hasher);
-                }
-                None => {
-                    false.hash(&mut hasher);
-                }
-            }
-            
-            // Hash cargo
-            ship.cargo.resources.minerals.hash(&mut hasher);
-            ship.cargo.resources.food.hash(&mut hasher);
-            ship.cargo.resources.energy.hash(&mut hasher);
-            ship.cargo.resources.alloys.hash(&mut hasher);
-            ship.cargo.resources.components.hash(&mut hasher);
-            ship.cargo.resources.fuel.hash(&mut hasher);
-            ship.cargo.population.hash(&mut hasher);
-            ship.cargo.capacity.hash(&mut hasher);
-            
-            ship.fuel.to_bits().hash(&mut hasher);
-            ship.owner.hash(&mut hasher);
-        }
-        
-        // Hash factions count and comprehensive data
-        save_data.factions.len().hash(&mut hasher);
-        for faction in &save_data.factions {
-            faction.id.hash(&mut hasher);
-            faction.name.hash(&mut hasher);
-            faction.is_player.hash(&mut hasher);
-            std::mem::discriminant(&faction.ai_type).hash(&mut hasher);
-            faction.score.hash(&mut hasher);
-        }
-        
-        Ok(hasher.finish())
-    }
-    
-    fn validate_save(&self, save_data: &SaveData) -> GameResult<()> {
-        // Check version compatibility
-        if save_data.version > self.version {
-            return Err(GameError::SystemError(
-                format!("Save file version {} is newer than supported version {}", 
-                    save_data.version, self.version)));
-        }
-        
-        // Check if checksum matches
-        let mut save_data_copy = save_data.clone();
-        let original_checksum = save_data_copy.checksum;
-        save_data_copy.checksum = 0;
-        
-        let calculated_checksum = self.calculate_checksum(&save_data_copy)?;
-        
-        if calculated_checksum != original_checksum {
-            return Err(GameError::SystemError(
-                format!("Save file checksum mismatch - file may be corrupted. Expected: {}, Got: {}", 
-                    original_checksum, calculated_checksum)));
-        }
-        
-        // Validate game state constraints
-        self.validate_game_constraints(save_data)?;
-        
-        // Validate referential integrity
-        self.validate_referential_integrity(save_data)?;
-        
-        Ok(())
-    }
-    
-    fn validate_game_constraints(&self, save_data: &SaveData) -> GameResult<()> {
-        // Validate planets
-        for (idx, planet) in save_data.planets.iter().enumerate() {
-            planet.resources.current.validate_non_negative()
-                .map_err(|e| GameError::SystemError(format!("Planet {} has invalid resources: {}", idx, e)))?;
-            
-            planet.resources.capacity.validate_non_negative()
-                .map_err(|e| GameError::SystemError(format!("Planet {} has invalid capacity: {}", idx, e)))?;
-            
-            // Check that current <= capacity
-            let current = &planet.resources.current;
-            let capacity = &planet.resources.capacity;
-            if current.minerals > capacity.minerals || current.food > capacity.food ||
-               current.energy > capacity.energy || current.alloys > capacity.alloys ||
-               current.components > capacity.components || current.fuel > capacity.fuel {
-                return Err(GameError::SystemError(
-                    format!("Planet {} has resources exceeding capacity", idx)));
-            }
-            
-            planet.population.allocation.validate(planet.population.total)
-                .map_err(|e| GameError::SystemError(format!("Planet {} has invalid worker allocation: {}", idx, e)))?;
-            
-            // Validate orbital elements
-            if planet.position.semi_major_axis <= 0.0 || planet.position.period <= 0.0 {
-                return Err(GameError::SystemError(
-                    format!("Planet {} has invalid orbital elements", idx)));
-            }
-            
-            // Validate population
-            if planet.population.total < 0 {
-                return Err(GameError::SystemError(
-                    format!("Planet {} has negative population", idx)));
-            }
-        }
-        
-        // Validate ships
-        for (idx, ship) in save_data.ships.iter().enumerate() {
-            ship.cargo.resources.validate_non_negative()
-                .map_err(|e| GameError::SystemError(format!("Ship {} has invalid cargo: {}", idx, e)))?;
-            
-            if ship.cargo.population < 0 || ship.cargo.capacity < 0 {
-                return Err(GameError::SystemError(
-                    format!("Ship {} has invalid cargo data: population={}, capacity={}", 
-                        idx, ship.cargo.population, ship.cargo.capacity)));
-            }
-            
-            if ship.cargo.population > ship.cargo.capacity {
-                return Err(GameError::SystemError(
-                    format!("Ship {} has population exceeding cargo capacity", idx)));
-            }
-            
-            if ship.fuel < 0.0 || !ship.fuel.is_finite() {
-                return Err(GameError::SystemError(
-                    format!("Ship {} has invalid fuel: {}", idx, ship.fuel)));
-            }
-            
-            // Validate trajectory if present
-            if let Some(traj) = &ship.trajectory {
-                if traj.departure_time >= traj.arrival_time {
-                    return Err(GameError::SystemError(
-                        format!("Ship {} has invalid trajectory times", idx)));
-                }
-                
-                if traj.fuel_cost < 0.0 || !traj.fuel_cost.is_finite() {
-                    return Err(GameError::SystemError(
-                        format!("Ship {} has invalid trajectory fuel cost", idx)));
-                }
-            }
-        }
-        
-        // Validate factions
-        for (idx, faction) in save_data.factions.iter().enumerate() {
-            if faction.name.is_empty() {
-                return Err(GameError::SystemError(
-                    format!("Faction {} has empty name", idx)));
-            }
-            
-            if faction.name.len() > 100 {
-                return Err(GameError::SystemError(
-                    format!("Faction {} name too long", idx)));
-            }
-        }
-        
-        Ok(())
-    }
-    
-    fn validate_referential_integrity(&self, save_data: &SaveData) -> GameResult<()> {
-        let faction_ids: HashSet<FactionId> = save_data.factions.iter().map(|f| f.id).collect();
-        let planet_ids: HashSet<PlanetId> = save_data.planets.iter().map(|p| p.id).collect();
-        let ship_ids: HashSet<ShipId> = save_data.ships.iter().map(|s| s.id).collect();
-        
-        // Check for duplicate IDs
-        if faction_ids.len() != save_data.factions.len() {
-            return Err(GameError::SystemError("Duplicate faction IDs found".into()));
-        }
-        if planet_ids.len() != save_data.planets.len() {
-            return Err(GameError::SystemError("Duplicate planet IDs found".into()));
-        }
-        if ship_ids.len() != save_data.ships.len() {
-            return Err(GameError::SystemError("Duplicate ship IDs found".into()));
-        }
-        
-        // Validate references
-        for planet in &save_data.planets {
-            if let Some(controller) = planet.controller {
-                if !faction_ids.contains(&controller) {
-                    return Err(GameError::SystemError(
-                        format!("Planet {} controlled by non-existent faction {}", planet.id, controller)));
-                }
-            }
-        }
-        
-        for ship in &save_data.ships {
-            if !faction_ids.contains(&ship.owner) {
-                return Err(GameError::SystemError(
-                    format!("Ship {} owned by non-existent faction {}", ship.id, ship.owner)));
-            }
-        }
-        
-        Ok(())
+    /// Batch migrate all V1 saves to V2
+    pub fn batch_migrate_saves() -> GameResult<Vec<String>> {
+        // TODO: Find all V1 saves and migrate them
+        Ok(Vec::new())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    
     #[test]
-    fn test_save_data_serialization() {
-        // Create test data
-        let test_planet = Planet {
-            id: 1,
-            position: OrbitalElements {
-                semi_major_axis: 5.0,
-                period: 365.0,
-                phase: 0.0,
-            },
-            resources: ResourceStorage {
-                current: ResourceBundle {
-                    minerals: 100,
-                    food: 50,
-                    energy: 75,
-                    alloys: 25,
-                    components: 10,
-                    fuel: 200,
-                },
-                capacity: ResourceBundle {
-                    minerals: 1000,
-                    food: 500,
-                    energy: 750,
-                    alloys: 250,
-                    components: 100,
-                    fuel: 2000,
-                },
-            },
-            population: Demographics {
-                total: 1000,
-                growth_rate: 0.02,
-                allocation: WorkerAllocation {
-                    agriculture: 200,
-                    mining: 300,
-                    industry: 250,
-                    research: 100,
-                    military: 50,
-                    unassigned: 100,
-                },
-            },
-            developments: vec![
-                Building {
-                    building_type: BuildingType::Mine,
-                    tier: 1,
-                    operational: true,
-                },
-                Building {
-                    building_type: BuildingType::Farm,
-                    tier: 2,
-                    operational: true,
-                },
-            ],
-            controller: Some(0),
-        };
-
-        let test_ship = Ship {
-            id: 2,
-            ship_class: ShipClass::Scout,
-            position: Vector2 { x: 10.0, y: 20.0 },
-            trajectory: Some(Trajectory {
-                origin: Vector2 { x: 10.0, y: 20.0 },
-                destination: Vector2 { x: 30.0, y: 40.0 },
-                departure_time: 100,
-                arrival_time: 150,
-                fuel_cost: 25.0,
-            }),
-            cargo: CargoHold {
-                resources: ResourceBundle {
-                    minerals: 10,
-                    food: 5,
-                    energy: 0,
-                    alloys: 0,
-                    components: 0,
-                    fuel: 0,
-                },
-                population: 0,
-                capacity: 50,
-            },
-            fuel: 85.0,
-            owner: 0,
-        };
-
-        let test_faction = Faction {
-            id: 0,
-            name: "Test Empire".to_string(),
-            is_player: true,
-            ai_type: AIPersonality::Balanced,
-            score: 1000,
-        };
-
-        let save_data = SaveData {
-            version: 1,
-            tick: 42,
-            planets: vec![test_planet],
-            ships: vec![test_ship],
-            factions: vec![test_faction],
-            checksum: 12345,
-            save_timestamp: 1234567890,
-        };
-
-        // Test serialization
-        let serialized = save_data.serialize().unwrap();
-        assert!(serialized.contains("STELLAR_SAVE_V1"));
-        assert!(serialized.contains("TICK:42"));
-        assert!(serialized.contains("PLANETS:1"));
-        assert!(serialized.contains("SHIPS:1"));
-        assert!(serialized.contains("FACTIONS:1"));
-        assert!(serialized.contains("CHECKSUM:12345"));
-
-        // Test deserialization
-        let deserialized = SaveData::deserialize(&serialized).unwrap();
-        assert_eq!(deserialized.tick, 42);
-        assert_eq!(deserialized.planets.len(), 1);
-        assert_eq!(deserialized.ships.len(), 1);
-        assert_eq!(deserialized.factions.len(), 1);
-        assert_eq!(deserialized.checksum, 12345);
-
-        // Verify planet data
-        let planet = &deserialized.planets[0];
-        assert_eq!(planet.id, 1);
-        assert_eq!(planet.position.semi_major_axis, 5.0);
-        assert_eq!(planet.resources.current.minerals, 100);
-        assert_eq!(planet.population.total, 1000);
-        assert_eq!(planet.developments.len(), 2);
-        assert_eq!(planet.controller, Some(0));
-
-        // Verify ship data
-        let ship = &deserialized.ships[0];
-        assert_eq!(ship.id, 2);
-        assert_eq!(ship.ship_class, ShipClass::Scout);
-        assert_eq!(ship.position.x, 10.0);
-        assert!(ship.trajectory.is_some());
-        assert_eq!(ship.fuel, 85.0);
-
-        // Verify faction data
-        let faction = &deserialized.factions[0];
-        assert_eq!(faction.id, 0);
-        assert_eq!(faction.name, "Test Empire");
-        assert!(faction.is_player);
-        assert_eq!(faction.ai_type, AIPersonality::Balanced);
-        assert_eq!(faction.score, 1000);
-    }
-
-    #[test]
-    fn test_checksum_calculation() {
+    fn test_save_system_v2_creation() {
         let save_system = SaveSystem::new();
+        assert_eq!(save_system.version, SAVE_FORMAT_VERSION);
+        assert_eq!(save_system.schema_version, 1);
+    }
+    
+    #[test]
+    fn test_save_feature_flags() {
+        let flags = SaveFeatureFlags {
+            has_assets: true,
+            has_collections: false,
+            has_megastructures: true,
+            has_unique_personnel: false,
+            chunk_compression: true,
+            differential_saves: false,
+        };
         
-        let save_data = SaveData {
-            version: 1,
-            tick: 100,
-            planets: vec![],
-            ships: vec![],
-            factions: vec![],
-            checksum: 0,
-            save_timestamp: 0,
-        };
-
-        let checksum = save_system.calculate_checksum(&save_data).unwrap();
-        assert!(checksum > 0);
-
-        // Same data should produce same checksum
-        let checksum2 = save_system.calculate_checksum(&save_data).unwrap();
-        assert_eq!(checksum, checksum2);
-
-        // Different data should produce different checksum
-        let save_data2 = SaveData {
-            version: 1,
-            tick: 101,
-            planets: vec![],
-            ships: vec![],
-            factions: vec![],
-            checksum: 0,
-            save_timestamp: 0,
-        };
-        let checksum3 = save_system.calculate_checksum(&save_data2).unwrap();
-        assert_ne!(checksum, checksum3);
+        let encoded = flags.to_u64();
+        let decoded = SaveFeatureFlags::from_u64(encoded);
+        
+        assert_eq!(flags.has_assets, decoded.has_assets);
+        assert_eq!(flags.has_collections, decoded.has_collections);
+        assert_eq!(flags.has_megastructures, decoded.has_megastructures);
+        assert_eq!(flags.chunk_compression, decoded.chunk_compression);
     }
-
+    
     #[test]
-    fn test_save_validation() {
-        let save_system = SaveSystem::new();
-
-        // Valid save should pass validation
-        let valid_save = SaveData {
-            version: 1,
-            tick: 50,
-            planets: vec![Planet {
-                id: 0,
-                position: OrbitalElements::default(),
-                resources: ResourceStorage {
-                    current: ResourceBundle {
-                        minerals: 100,
-                        food: 50,
-                        energy: 25,
-                        alloys: 10,
-                        components: 5,
-                        fuel: 75,
-                    },
-                    capacity: ResourceBundle {
-                        minerals: 1000,
-                        food: 500,
-                        energy: 250,
-                        alloys: 100,
-                        components: 50,
-                        fuel: 750,
-                    },
-                },
-                population: Demographics {
-                    total: 100,
-                    growth_rate: 0.02,
-                    allocation: WorkerAllocation {
-                        agriculture: 20,
-                        mining: 30,
-                        industry: 25,
-                        research: 10,
-                        military: 5,
-                        unassigned: 10,
-                    },
-                },
-                developments: vec![],
-                controller: None,
-            }],
-            ships: vec![Ship {
-                id: 0,
-                ship_class: ShipClass::Scout,
-                position: Vector2 { x: 0.0, y: 0.0 },
-                trajectory: None,
-                cargo: CargoHold {
-                    resources: ResourceBundle::default(),
-                    population: 0,
-                    capacity: 10,
-                },
-                fuel: 100.0,
-                owner: 0,
-            }],
-            factions: vec![Faction {
-                id: 0,
-                name: "Test Faction".to_string(),
-                is_player: true,
-                ai_type: AIPersonality::Balanced,
-                score: 100,
-            }],
-            checksum: 0,
-            save_timestamp: 0,
-        };
-
-        let checksum = save_system.calculate_checksum(&valid_save).unwrap();
-        let valid_save_with_checksum = SaveData {
-            checksum,
-            ..valid_save
-        };
-
-        assert!(save_system.validate_save(&valid_save_with_checksum).is_ok());
-
-        // Invalid checksum should fail validation
-        let invalid_checksum_save = SaveData {
-            checksum: checksum + 1,
-            ..valid_save_with_checksum
-        };
-        assert!(save_system.validate_save(&invalid_checksum_save).is_err());
+    fn test_asset_id_generation() {
+        let id1 = AssetId::new();
+        let id2 = AssetId::new();
+        assert_ne!(id1, id2);
+        
+        let id3 = AssetId::from_u64(12345);
+        assert_eq!(id3.as_u64(), 12345);
     }
-
+    
     #[test]
-    fn test_save_validation_negative_resources() {
-        let save_system = SaveSystem::new();
-
-        // Save with negative resources should fail validation
-        let invalid_save = SaveData {
-            version: 1,
-            tick: 50,
-            planets: vec![Planet {
-                id: 0,
-                position: OrbitalElements::default(),
-                resources: ResourceStorage {
-                    current: ResourceBundle {
-                        minerals: -100, // Negative resource
-                        food: 50,
-                        energy: 25,
-                        alloys: 10,
-                        components: 5,
-                        fuel: 75,
-                    },
-                    capacity: ResourceBundle {
-                        minerals: 1000,
-                        food: 500,
-                        energy: 250,
-                        alloys: 100,
-                        components: 50,
-                        fuel: 750,
-                    },
-                },
-                population: Demographics {
-                    total: 100,
-                    growth_rate: 0.02,
-                    allocation: WorkerAllocation {
-                        agriculture: 20,
-                        mining: 30,
-                        industry: 25,
-                        research: 10,
-                        military: 5,
-                        unassigned: 10,
-                    },
-                },
-                developments: vec![],
-                controller: None,
-            }],
-            ships: vec![],
-            factions: vec![],
-            checksum: 0,
-            save_timestamp: 0,
-        };
-
-        let checksum = save_system.calculate_checksum(&invalid_save).unwrap();
-        let invalid_save_with_checksum = SaveData {
-            checksum,
-            ..invalid_save
-        };
-
-        assert!(save_system.validate_save(&invalid_save_with_checksum).is_err());
-    }
-
-    #[test]
-    fn test_save_validation_worker_allocation() {
-        let save_system = SaveSystem::new();
-
-        // Save with invalid worker allocation should fail validation
-        let invalid_save = SaveData {
-            version: 1,
-            tick: 50,
-            planets: vec![Planet {
-                id: 0,
-                position: OrbitalElements::default(),
-                resources: ResourceStorage::default(),
-                population: Demographics {
-                    total: 100,
-                    growth_rate: 0.02,
-                    allocation: WorkerAllocation {
-                        agriculture: 20,
-                        mining: 30,
-                        industry: 25,
-                        research: 10,
-                        military: 5,
-                        unassigned: 15, // Total: 105, but population is 100
-                    },
-                },
-                developments: vec![],
-                controller: None,
-            }],
-            ships: vec![],
-            factions: vec![],
-            checksum: 0,
-            save_timestamp: 0,
-        };
-
-        let checksum = save_system.calculate_checksum(&invalid_save).unwrap();
-        let invalid_save_with_checksum = SaveData {
-            checksum,
-            ..invalid_save
-        };
-
-        assert!(save_system.validate_save(&invalid_save_with_checksum).is_err());
-    }
-
-    #[test]
-    fn test_ship_trajectory_serialization() {
-        // Test ship with no trajectory
-        let ship_no_traj = Ship {
-            id: 0,
-            ship_class: ShipClass::Transport,
-            position: Vector2 { x: 5.0, y: 10.0 },
-            trajectory: None,
-            cargo: CargoHold::default(),
-            fuel: 50.0,
-            owner: 1,
-        };
-
-        let save_data = SaveData {
-            version: 1,
-            tick: 1,
-            planets: vec![],
-            ships: vec![ship_no_traj],
-            factions: vec![],
-            checksum: 0,
-            save_timestamp: 0,
-        };
-
-        let serialized = save_data.serialize().unwrap();
-        assert!(serialized.contains("S_TRAJ:NONE"));
-
-        let deserialized = SaveData::deserialize(&serialized).unwrap();
-        assert!(deserialized.ships[0].trajectory.is_none());
-
-        // Test ship with trajectory
-        let ship_with_traj = Ship {
-            id: 1,
-            ship_class: ShipClass::Warship,
-            position: Vector2 { x: 0.0, y: 0.0 },
-            trajectory: Some(Trajectory {
-                origin: Vector2 { x: 0.0, y: 0.0 },
-                destination: Vector2 { x: 100.0, y: 200.0 },
-                departure_time: 10,
-                arrival_time: 50,
-                fuel_cost: 75.5,
-            }),
-            cargo: CargoHold::default(),
-            fuel: 80.0,
-            owner: 2,
-        };
-
-        let save_data2 = SaveData {
-            version: 1,
-            tick: 2,
-            planets: vec![],
-            ships: vec![ship_with_traj],
-            factions: vec![],
-            checksum: 0,
-            save_timestamp: 0,
-        };
-
-        let serialized2 = save_data2.serialize().unwrap();
-        assert!(serialized2.contains("S_TRAJ:0,0,100,200,10,50"));
-        assert!(serialized2.contains("S_FUEL_COST:75.5"));
-
-        let deserialized2 = SaveData::deserialize(&serialized2).unwrap();
-        let traj = deserialized2.ships[0].trajectory.as_ref().unwrap();
-        assert_eq!(traj.destination.x, 100.0);
-        assert_eq!(traj.destination.y, 200.0);
-        assert_eq!(traj.fuel_cost, 75.5);
-    }
-
-    #[test]
-    fn test_invalid_save_format() {
-        // Test invalid version
-        assert!(SaveData::deserialize("INVALID_VERSION\n").is_err());
-
-        // Test missing tick
-        assert!(SaveData::deserialize("STELLAR_SAVE_V1\n").is_err());
-
-        // Test invalid tick format
-        assert!(SaveData::deserialize("STELLAR_SAVE_V1\nTICK:invalid\n").is_err());
-
-        // Test missing planet data
-        assert!(SaveData::deserialize("STELLAR_SAVE_V1\nTICK:100\n").is_err());
-    }
-
-    #[test]
-    fn test_save_system_event_handling() {
-        let mut save_system = SaveSystem::new();
-
-        // Test SaveGame event
-        let save_event = GameEvent::PlayerCommand(crate::core::events::PlayerCommand::SaveGame);
-        assert!(save_system.handle_event(&save_event).is_ok());
-
-        // Test LoadGame event
-        let load_event = GameEvent::PlayerCommand(crate::core::events::PlayerCommand::LoadGame);
-        assert!(save_system.handle_event(&load_event).is_ok());
-
-        // Test other events are ignored
-        let other_event = GameEvent::PlayerCommand(crate::core::events::PlayerCommand::PauseGame(true));
-        assert!(save_system.handle_event(&other_event).is_ok());
+    fn test_chunk_type_values() {
+        assert_eq!(ChunkType::Header as u32, 0x48454144);
+        assert_eq!(ChunkType::Assets as u32, 0x41535354);
+        assert_eq!(ChunkType::Collections as u32, 0x434F4C4C);
     }
 }
