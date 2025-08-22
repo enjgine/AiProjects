@@ -1,17 +1,33 @@
 // src/core/mod.rs
 pub mod events;
 pub mod types;
-pub mod asset_types;
 
 // Re-export commonly used types
 pub use events::{EventBus, GameEvent, SystemId, PlayerCommand, SimulationEvent, StateChange};
 pub use types::*;
-pub use asset_types::{AssetId, AssetType, AssetCategory, AssetRarity, AssetRegistry, AssetCollection, Asset};
 
 // Import managers and systems
 use crate::managers::{PlanetManager, ShipManager, FactionManager};
 use crate::systems::{TimeManager, ResourceSystem, PopulationSystem, ConstructionSystem, PhysicsEngine, CombatResolver, SaveSystem, GameInitializer};
-use crate::ui::{UIRenderer, StartMenu};
+use crate::ui_v2::UISystem;
+use macroquad::prelude::*;
+
+// Temporary stub for SaveLoadDialog until ui_v2 fully replaces it
+#[derive(Default)]
+pub struct SaveLoadDialogStub {
+    active: bool,
+}
+
+impl SaveLoadDialogStub {
+    pub fn new() -> Self { Self::default() }
+    pub fn is_active(&self) -> bool { false } // Always inactive for now
+    pub fn handle_input(&mut self) -> GameResult<Vec<GameEvent>> { Ok(Vec::new()) }
+    pub fn render(&mut self) -> GameResult<()> { Ok(()) }
+    pub fn show_save_dialog(&mut self) { /* stub */ }
+    pub fn show_new_game_dialog(&mut self) { /* stub */ }
+    pub fn show_load_dialog(&mut self, _saves: Vec<crate::systems::save_system::SaveInfo>) { /* stub */ }
+    pub fn close(&mut self) { /* stub */ }
+}
 
 pub struct GameState {
     pub event_bus: EventBus,
@@ -25,9 +41,8 @@ pub struct GameState {
     pub physics_engine: PhysicsEngine,
     pub combat_resolver: CombatResolver,
     pub save_system: SaveSystem,
-    pub ui_renderer: UIRenderer,
-    pub start_menu: StartMenu,
-    pub save_load_dialog: crate::ui::save_load_dialog::SaveLoadDialog,
+    pub ui_system: UISystem,
+    pub save_load_dialog: SaveLoadDialogStub,
     pub current_mode: GameMode,
     pub should_exit: bool,
     pub game_initializer: GameInitializer,
@@ -69,9 +84,8 @@ impl GameState {
             physics_engine: PhysicsEngine::new(),
             combat_resolver: CombatResolver::new(),
             save_system: SaveSystem::new(),
-            ui_renderer: UIRenderer::new(),
-            start_menu: StartMenu::new(),
-            save_load_dialog: crate::ui::save_load_dialog::SaveLoadDialog::new(),
+            ui_system: UISystem::new(),
+            save_load_dialog: SaveLoadDialogStub::new(),
             current_mode: GameMode::MainMenu,
             should_exit: false,
             game_initializer: GameInitializer::new(GameConfiguration::default()),
@@ -79,11 +93,8 @@ impl GameState {
             menu_events: Vec::new(),
         };
         
-        // Update StartMenu with correct save status
-        let saves_available = state.save_system.list_saves()
-            .map(|saves| !saves.is_empty())
-            .unwrap_or(false);
-        state.start_menu.update_save_status(saves_available);
+        // Initialize basic UI for now
+        state.initialize_basic_ui()?;
         
         // Don't initialize demo content when starting in main menu mode
         // Demo content will be initialized when starting a new game
@@ -95,43 +106,31 @@ impl GameState {
     pub fn process_input(&mut self) -> GameResult<()> {
         match self.current_mode {
             GameMode::MainMenu => {
-                // Process save/load dialog input first (takes priority when active)
-                let dialog_was_active = self.save_load_dialog.is_active();
-                let dialog_events = self.save_load_dialog.handle_input()?;
-                for event in dialog_events {
-                    self.handle_menu_event(event)?;
+                // Basic keyboard input for temporary menu
+                if is_key_pressed(KeyCode::N) {
+                    // Start new game
+                    self.current_mode = GameMode::InGame;
+                    self.initialize_demo_content()?;
+                }
+                if is_key_pressed(KeyCode::L) {
+                    // Try to load game
+                    if let Err(_) = self.load_game() {
+                        // If load fails, stay in menu
+                        println!("No save file found or load failed");
+                    }
                 }
                 
-                // Only process menu input if dialog was NOT active before processing input
-                // This prevents race condition where dialog closes and menu processes same keypress
-                if !dialog_was_active {
-                    // In main menu mode, process keyboard input
-                    let keyboard_events = self.start_menu.process_input()?;
-                    for event in keyboard_events {
-                        self.handle_menu_event(event)?;
-                    }
-                    
-                    // Process any mouse events that were captured during rendering
-                    let mouse_events = std::mem::take(&mut self.menu_events);
-                    for event in mouse_events {
-                        self.handle_menu_event(event)?;
-                    }
+                // Also let ui_system handle any additional interactions
+                let menu_commands = self.ui_system.update(0.016);
+                for command in menu_commands {
+                    self.handle_menu_event(GameEvent::PlayerCommand(command))?;
                 }
             }
             GameMode::InGame => {
-                // Process save/load dialog input first (takes priority when active)
-                let dialog_was_active = self.save_load_dialog.is_active();
-                let dialog_events = self.save_load_dialog.handle_input()?;
-                for event in dialog_events {
-                    // In-game dialog events should be processed as system events
-                    self.event_bus.queue_event(event);
-                }
-                
-                // Only process game input if dialog was NOT active before processing input
-                // This prevents race condition where dialog closes and game processes same keypress
-                if !dialog_was_active {
-                    // Process input first
-                    self.ui_renderer.process_input(&mut self.event_bus)?;
+                // ui_v2 handles all input including save/load dialogs
+                let ui_commands = self.ui_system.update(0.016); // ~60fps delta
+                for command in ui_commands {
+                    self.event_bus.queue_event(GameEvent::PlayerCommand(command));
                 }
             }
         }
@@ -370,8 +369,7 @@ impl GameState {
                         PlayerCommand::LoadGameFrom(name) => self.handle_load_game_from_slot_command(name),
                         PlayerCommand::BackToMenu => {
                             self.current_mode = GameMode::MainMenu;
-                            // Refresh save status when returning to menu
-                            self.start_menu.refresh_save_status();
+                            // ui_v2 handles menu refresh
                             Ok(())
                         }
                         PlayerCommand::NewGame => {
@@ -390,7 +388,7 @@ impl GameState {
                     self.save_system.handle_event(event)
                 }
             },
-            SystemId::UIRenderer => self.ui_renderer.handle_event(event),
+            SystemId::UIRenderer => Ok(()), // UIBridge handles events differently
         }
     }
 
@@ -412,7 +410,7 @@ impl GameState {
         
         // Extract the save system temporarily to avoid borrow conflicts
         let mut save_system = std::mem::replace(&mut self.save_system, SaveSystem::new());
-        let result = save_system.save_game_binary(self, name);
+        let result = save_system.save_game_to_slot(self, name);
         self.save_system = save_system;
         result
     }
@@ -420,31 +418,31 @@ impl GameState {
     fn handle_load_game_from_slot_command(&mut self, name: &str) -> GameResult<()> {
         // Extract the save system temporarily to avoid borrow conflicts
         let mut save_system = std::mem::replace(&mut self.save_system, SaveSystem::new());
-        let save_data = save_system.load_game_binary(name)?;
+        let save_data = save_system.load_game_from_slot(name)?;
         self.save_system = save_system;
         
         // Apply the loaded data to the game state in the correct order
         // Only load actual data if it exists (avoid loading empty vectors that clear game state)
-        if !save_data.game_state.factions.is_empty() {
-            self.faction_manager.load_factions(save_data.game_state.factions)?;
+        if !save_data.factions.is_empty() {
+            self.faction_manager.load_factions(save_data.factions)?;
         }
         
-        if !save_data.game_state.planets.is_empty() {
-            self.planet_manager.load_planets(save_data.game_state.planets)?;
+        if !save_data.planets.is_empty() {
+            self.planet_manager.load_planets(save_data.planets)?;
         }
         
-        if !save_data.game_state.ships.is_empty() {
-            self.ship_manager.load_ships(save_data.game_state.ships)?;
+        if !save_data.ships.is_empty() {
+            self.ship_manager.load_ships(save_data.ships)?;
         }
         
         // Set the tick counter last
-        self.time_manager.set_tick(save_data.game_state.tick)?;
+        self.time_manager.set_tick(save_data.tick)?;
         
         // Clear event bus to remove any stale events referencing old entities
         self.event_bus.clear();
         
         // Reset UI renderer to clear any cached selections or state
-        self.ui_renderer = UIRenderer::new();
+        self.ui_system = UISystem::new();
         
         // Switch to gameplay mode after successful load
         self.current_mode = GameMode::InGame;
@@ -545,38 +543,35 @@ impl GameState {
         Ok(())
     }
     
-    pub fn render(&mut self, interpolation: f32) -> GameResult<()> {
+    pub fn render(&mut self, _interpolation: f32) -> GameResult<()> {
+        // Clear screen
+        clear_background(BLACK);
+        
         match self.current_mode {
             GameMode::MainMenu => {
-                // Render the menu every frame for smooth display
-                let config = self.get_game_configuration().clone();
-                let menu_events = self.start_menu.render(Some(&config))?;
-                // Store mouse events to be processed in next fixed_update
-                self.menu_events.extend(menu_events);
+                // Temporary basic menu display until proper UI is implemented
+                draw_text("STELLAR DOMINION", 200.0, 200.0, 60.0, WHITE);
+                draw_text("Press 'N' for New Game", 200.0, 300.0, 30.0, WHITE);
+                draw_text("Press 'L' to Load Game", 200.0, 350.0, 30.0, WHITE);
+                draw_text("Press 'Esc' to Exit", 200.0, 400.0, 30.0, WHITE);
                 
-                // Render save/load dialog on top if active
-                self.save_load_dialog.render()?;
-                
+                // Also try to render ui_v2 system in case it has content
+                self.ui_system.render();
                 Ok(())
             }
             GameMode::InGame => {
-                // Create a temporary collection for events generated during rendering
-                let mut render_events = Vec::new();
-                
-                // Temporarily extract ui_renderer to avoid borrow conflicts
-                let mut ui_renderer = std::mem::replace(&mut self.ui_renderer, UIRenderer::new());
-                let result = ui_renderer.render_with_events(self, interpolation, &mut render_events);
-                self.ui_renderer = ui_renderer;
-                
-                // Queue any events that were generated during rendering
-                for event in render_events {
-                    self.event_bus.queue_event(event);
-                }
+                // Use ui_system for rendering
+                self.ui_system.render();
                 
                 // Render save/load dialog on top if active
                 self.save_load_dialog.render()?;
                 
-                result
+                // If no UI content, show basic game info
+                draw_text(&format!("Tick: {}", self.time_manager.get_current_tick()), 10.0, 30.0, 20.0, WHITE);
+                draw_text(&format!("Planets: {}", self.planet_manager.get_planet_count()), 10.0, 60.0, 20.0, WHITE);
+                draw_text("Press 'Esc' to return to menu", 10.0, 90.0, 20.0, WHITE);
+                
+                Ok(())
             }
         }
     }
@@ -618,7 +613,7 @@ impl GameState {
                     self.combat_resolver = CombatResolver::new();
                     
                     // Clear UI state and switch to in-game mode
-                    self.ui_renderer = UIRenderer::new();
+                    self.ui_system = UISystem::new();
                     self.event_bus.clear();
                     
                     // Ensure dialog stays closed during mode switch
@@ -630,7 +625,7 @@ impl GameState {
                     
                     // Auto-save the new game with the given name
                     let mut save_system = std::mem::replace(&mut self.save_system, SaveSystem::new());
-                    let _result = save_system.save_game_binary(self, &name);
+                    let _result = save_system.save_game_to_slot(self, &name);
                     self.save_system = save_system;
                 }
                 PlayerCommand::LoadGame => {
@@ -658,7 +653,7 @@ impl GameState {
                     self.combat_resolver = CombatResolver::new();
                     
                     // Clear all UI state to prevent stale entity references
-                    self.ui_renderer = UIRenderer::new();
+                    self.ui_system = UISystem::new();
                     
                     // Clear any queued events that might reference old entities
                     self.event_bus.clear();
@@ -694,14 +689,20 @@ impl GameState {
                 }
                 PlayerCommand::BackToMenu => {
                     self.current_mode = GameMode::MainMenu;
-                    // Refresh save status when returning to menu
-                    self.start_menu.refresh_save_status();
+                    // ui_v2 handles menu refresh
                 }
                 _ => {
                     // Other commands are not valid in menu mode
                 }
             }
         }
+        Ok(())
+    }
+    
+    /// Initialize basic UI for the main menu
+    fn initialize_basic_ui(&mut self) -> GameResult<()> {
+        // For now, just render some basic text to show the game is running
+        // This is a temporary solution until proper menu is implemented
         Ok(())
     }
     

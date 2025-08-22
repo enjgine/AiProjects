@@ -128,7 +128,7 @@ fn test_system_update_order_enforced() {
     // Verify that EventBus.update_order matches the required sequence
     let event_bus = EventBus::new();
     let expected_order = vec![
-        SystemId::UIRenderer,
+        // SystemId::UIRenderer, // Replaced by ui_v2 system
         SystemId::PhysicsEngine, 
         SystemId::ResourceSystem,
         SystemId::PopulationSystem,
@@ -140,7 +140,7 @@ fn test_system_update_order_enforced() {
     assert_eq!(event_bus.update_order, expected_order);
     
     // Verify the order cannot be accidentally modified
-    assert_eq!(event_bus.update_order.len(), 7);
+    assert_eq!(event_bus.update_order.len(), 6);
     
     // Ensure TimeManager comes last (required for tick events)
     assert_eq!(event_bus.update_order.last(), Some(&SystemId::TimeManager));
@@ -389,8 +389,7 @@ mod integration {
         assert!(planet_subscriptions.contains(&EventType::PlayerCommand));
         assert!(planet_subscriptions.contains(&EventType::SimulationEvent));
         
-        let ui_subscriptions = game_state.event_bus.subscribers.get(&SystemId::UIRenderer).unwrap();
-        assert!(ui_subscriptions.contains(&EventType::StateChanged));
+        // UI system replaced by ui_v2 - no longer uses EventBus subscriptions
         
         // Verify systems that should process events are subscribed
         assert!(game_state.event_bus.subscribers.contains_key(&SystemId::ResourceSystem));

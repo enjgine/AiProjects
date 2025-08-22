@@ -17,6 +17,7 @@ pub enum GameError {
     InsufficientResources { required: ResourceBundle, available: ResourceBundle },
     InvalidTarget(String),
     SystemError(String),
+    SaveError(String),
 }
 
 impl fmt::Display for GameError {
@@ -28,6 +29,7 @@ impl fmt::Display for GameError {
             }
             GameError::InvalidTarget(msg) => write!(f, "Invalid target: {}", msg),
             GameError::SystemError(msg) => write!(f, "System error: {}", msg),
+            GameError::SaveError(msg) => write!(f, "Save error: {}", msg),
         }
     }
 }

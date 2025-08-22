@@ -85,8 +85,8 @@ pub mod core;
 pub mod managers;
 /// Simulation logic layer - Contains system structs that process game logic and emit events
 pub mod systems;
-/// User interface layer - Contains UI rendering and input handling components
-pub mod ui;
+/// User interface version 2 - Modern modular component-based UI system
+pub mod ui_v2;
 
 // Public API exports - carefully controlled interface
 // These are the only types that external consumers should directly access

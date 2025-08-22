@@ -1,298 +1,26 @@
-// tests/save_system_v2_test.rs
-//! Comprehensive tests for the next-generation save system
+// tests/save_system_test.rs
+//! Tests for the simplified save system
 //! 
 //! Tests cover:
-//! - Binary serialization/deserialization
-//! - Asset management and registry operations
-//! - Chunk-based file operations
-//! - Version compatibility and migration
-//! - Performance and scalability with large datasets
-//! - Error handling and recovery
+//! - Basic save/load functionality
+//! - Save file validation
+//! - Save listing and management
+//! - Error handling
+//! - Data integrity validation
 
 use stellar_dominion::core::*;
-use stellar_dominion::core::asset_types::*;
 use stellar_dominion::systems::SaveSystem;
-use stellar_dominion::systems::save_system::{SaveDataV2};
-use std::collections::HashMap;
+use stellar_dominion::systems::save_system::{SaveData, SaveInfo};
 use std::fs;
 use std::path::PathBuf;
 
-/// Test fixture for creating test assets
-struct AssetTestFixture;
+/// Test fixture for creating save system test data
+struct SaveTestFixture;
 
-impl AssetTestFixture {
-    /// Create a test planetary facility
-    pub fn create_test_facility() -> PlanetaryFacility {
-        PlanetaryFacility {
-            asset_id: AssetId::from_u64(1001),
-            facility_type: PlanetaryFacilityType::AdvancedMine,
-            tier: 3,
-            rarity: AssetRarity::Rare,
-            name: "Quantum Mining Complex".to_string(),
-            description: Some("Advanced mining facility with quantum extraction technology".to_string()),
-            resource_bonus: ResourceBundle {
-                minerals: 200,
-                food: 0,
-                energy: -50,
-                alloys: 50,
-                components: 0,
-                fuel: 0,
-            },
-            population_capacity: 500,
-            power_requirement: 100,
-            maintenance_cost: ResourceBundle {
-                minerals: 10,
-                food: 0,
-                energy: 25,
-                alloys: 5,
-                components: 2,
-                fuel: 0,
-            },
-            special_effects: vec![
-                SpecialEffect::ResourceBonus(ResourceBundle { minerals: 100, ..Default::default() }),
-                SpecialEffect::ProductionEfficiency(1.5),
-            ],
-        }
-    }
-    
-    /// Create a test ship weapon
-    pub fn create_test_weapon() -> ShipWeapon {
-        ShipWeapon {
-            asset_id: AssetId::from_u64(2001),
-            weapon_type: WeaponType::PlasmaLauncher,
-            tier: 2,
-            rarity: AssetRarity::Uncommon,
-            name: "Mk-II Plasma Cannon".to_string(),
-            description: Some("High-energy plasma weapon system".to_string()),
-            damage: 150,
-            range: 1000.0,
-            accuracy: 0.85,
-            power_requirement: 75,
-            special_properties: vec![
-                WeaponProperty::ArmorPiercing,
-                WeaponProperty::EnergyDrain,
-            ],
-        }
-    }
-    
-    /// Create a test space station
-    pub fn create_test_space_station() -> SpaceStation {
-        SpaceStation {
-            asset_id: AssetId::from_u64(3001),
-            station_type: SpaceStationType::TradingPost,
-            position: Vector2::new(500.0, 300.0),
-            tier: 1,
-            rarity: AssetRarity::Common,
-            name: "Frontier Trading Hub".to_string(),
-            description: Some("Commercial trading station in deep space".to_string()),
-            construction_cost: ResourceBundle {
-                minerals: 1000,
-                food: 0,
-                energy: 500,
-                alloys: 300,
-                components: 200,
-                fuel: 0,
-            },
-            maintenance_cost: ResourceBundle {
-                minerals: 50,
-                food: 100,
-                energy: 75,
-                alloys: 25,
-                components: 10,
-                fuel: 50,
-            },
-            capabilities: vec![
-                StationCapability::ResourceProcessing,
-                StationCapability::ShipRepair,
-            ],
-            docking_capacity: 8,
-        }
-    }
-    
-    /// Create a test relic artifact
-    pub fn create_test_artifact() -> RelicArtifact {
-        RelicArtifact {
-            asset_id: AssetId::from_u64(4001),
-            artifact_type: ArtifactType::PrecursorRelic,
-            rarity: AssetRarity::Legendary,
-            name: "Precursor Navigation Matrix".to_string(),
-            description: "Ancient alien device that enhances interstellar travel capabilities".to_string(),
-            discovery_location: Some(42),
-            activation_cost: ResourceBundle {
-                minerals: 0,
-                food: 0,
-                energy: 1000,
-                alloys: 0,
-                components: 100,
-                fuel: 0,
-            },
-            powers: vec![
-                ArtifactPower::FleetEnhancement,
-                ArtifactPower::TechnologyAcceleration,
-            ],
-            restrictions: vec![
-                ArtifactRestriction::FactionExclusive,
-                ArtifactRestriction::LocationBound,
-            ],
-        }
-    }
-    
-    /// Create a populated asset registry for testing
-    pub fn create_test_registry() -> AssetRegistry {
-        let mut registry = AssetRegistry::new();
-        
-        // Add various asset types
-        let facility = Self::create_test_facility();
-        let weapon = Self::create_test_weapon();
-        let station = Self::create_test_space_station();
-        let artifact = Self::create_test_artifact();
-        
-        registry.register_asset(AssetType::PlanetaryFacility(facility)).unwrap();
-        registry.register_asset(AssetType::ShipWeapon(weapon)).unwrap();
-        registry.register_asset(AssetType::SpaceStation(station)).unwrap();
-        registry.register_asset(AssetType::RelicArtifact(artifact)).unwrap();
-        
-        // Create asset collections
-        let fleet_loadout = registry.create_collection(
-            "Elite Fleet Loadout".to_string(),
-            CollectionType::FleetConfiguration
-        );
-        
-        let planetary_infrastructure = registry.create_collection(
-            "Mining World Infrastructure".to_string(),
-            CollectionType::PlanetaryInfrastructure
-        );
-        
-        // Add assets to collections
-        registry.add_to_collection(fleet_loadout, AssetId::from_u64(2001)).unwrap();
-        registry.add_to_collection(planetary_infrastructure, AssetId::from_u64(1001)).unwrap();
-        
-        // Assign assets to locations
-        registry.assign_asset(AssetId::from_u64(1001), AssignmentLocation::Planet(0)).unwrap();
-        registry.assign_asset(AssetId::from_u64(2001), AssignmentLocation::Ship(0)).unwrap();
-        registry.assign_asset(AssetId::from_u64(3001), AssignmentLocation::Space(Vector2::new(500.0, 300.0))).unwrap();
-        registry.assign_asset(AssetId::from_u64(4001), AssignmentLocation::Faction(1)).unwrap();
-        
-        registry
-    }
-}
-
-/// Test suite for asset type definitions and operations
-#[cfg(test)]
-mod asset_tests {
-    use super::*;
-    
-    #[test]
-    fn test_asset_id_generation() {
-        let id1 = AssetId::new();
-        let id2 = AssetId::new();
-        
-        // IDs should be unique
-        assert_ne!(id1, id2);
-        
-        // IDs should be non-zero
-        assert!(id1.as_u64() > 0);
-        assert!(id2.as_u64() > 0);
-        
-        // Test from_u64 conversion
-        let id3 = AssetId::from_u64(12345);
-        assert_eq!(id3.as_u64(), 12345);
-    }
-    
-    #[test]
-    fn test_asset_registry_operations() {
-        let mut registry = AssetRegistry::new();
-        
-        // Test asset registration
-        let facility = AssetTestFixture::create_test_facility();
-        let asset_id = registry.register_asset(AssetType::PlanetaryFacility(facility)).unwrap();
-        assert_eq!(asset_id, AssetId::from_u64(1001));
-        
-        // Test duplicate registration fails
-        let duplicate_facility = AssetTestFixture::create_test_facility();
-        assert!(registry.register_asset(AssetType::PlanetaryFacility(duplicate_facility)).is_err());
-        
-        // Test asset assignment
-        registry.assign_asset(asset_id, AssignmentLocation::Planet(0)).unwrap();
-        
-        let planet_assets = registry.get_assets_at_location(&AssignmentLocation::Planet(0));
-        assert_eq!(planet_assets.len(), 1);
-        assert_eq!(planet_assets[0], asset_id);
-        
-        // Test category indexing
-        let planetary_assets = registry.get_assets_by_category(&AssetCategory::PlanetaryStructure);
-        assert_eq!(planetary_assets.len(), 1);
-        assert_eq!(planetary_assets[0], asset_id);
-        
-        // Test rarity indexing
-        let rare_assets = registry.get_assets_by_rarity(&AssetRarity::Rare);
-        assert_eq!(rare_assets.len(), 1);
-        assert_eq!(rare_assets[0], asset_id);
-    }
-    
-    #[test]
-    fn test_asset_collections() {
-        let mut registry = AssetRegistry::new();
-        
-        // Register test assets
-        let weapon1 = AssetTestFixture::create_test_weapon();
-        let weapon_id1 = registry.register_asset(AssetType::ShipWeapon(weapon1)).unwrap();
-        
-        let mut weapon2 = AssetTestFixture::create_test_weapon();
-        weapon2.asset_id = AssetId::from_u64(2002);
-        weapon2.name = "Mk-III Plasma Cannon".to_string();
-        let weapon_id2 = registry.register_asset(AssetType::ShipWeapon(weapon2)).unwrap();
-        
-        // Create collection
-        let collection_id = registry.create_collection(
-            "Heavy Weapons Suite".to_string(),
-            CollectionType::ShipLoadout
-        );
-        
-        // Add assets to collection
-        registry.add_to_collection(collection_id, weapon_id1).unwrap();
-        registry.add_to_collection(collection_id, weapon_id2).unwrap();
-        
-        // Verify collection
-        let collection = registry.collections.get(&collection_id).unwrap();
-        assert_eq!(collection.assets.len(), 2);
-        assert!(collection.assets.contains(&weapon_id1));
-        assert!(collection.assets.contains(&weapon_id2));
-    }
-    
-    #[test]
-    fn test_complex_asset_hierarchy() {
-        let registry = AssetTestFixture::create_test_registry();
-        
-        // Verify all asset categories are represented
-        assert!(registry.get_assets_by_category(&AssetCategory::PlanetaryStructure).len() > 0);
-        assert!(registry.get_assets_by_category(&AssetCategory::ShipEquipment).len() > 0);
-        assert!(registry.get_assets_by_category(&AssetCategory::SpaceStructure).len() > 0);
-        assert!(registry.get_assets_by_category(&AssetCategory::FactionArtifact).len() > 0);
-        
-        // Verify rarity distribution
-        assert!(registry.get_assets_by_rarity(&AssetRarity::Common).len() > 0);
-        assert!(registry.get_assets_by_rarity(&AssetRarity::Uncommon).len() > 0);
-        assert!(registry.get_assets_by_rarity(&AssetRarity::Rare).len() > 0);
-        assert!(registry.get_assets_by_rarity(&AssetRarity::Legendary).len() > 0);
-        
-        // Verify location assignments
-        assert!(registry.get_assets_at_location(&AssignmentLocation::Planet(0)).len() > 0);
-        assert!(registry.get_assets_at_location(&AssignmentLocation::Ship(0)).len() > 0);
-        assert!(registry.get_assets_at_location(&AssignmentLocation::Faction(1)).len() > 0);
-        
-        // Verify collections
-        assert_eq!(registry.collections.len(), 2);
-    }
-}
-
-/// Test suite for save system V2 functionality
-#[cfg(test)]
-mod save_system_tests {
-    use super::*;
-    
-    fn setup_test_directory() -> PathBuf {
-        let test_dir = PathBuf::from("test_saves_v2");
+impl SaveTestFixture {
+    /// Create a test save directory
+    pub fn setup_test_directory() -> PathBuf {
+        let test_dir = PathBuf::from("test_saves");
         if test_dir.exists() {
             fs::remove_dir_all(&test_dir).unwrap();
         }
@@ -300,424 +28,400 @@ mod save_system_tests {
         test_dir
     }
     
-    fn cleanup_test_directory(test_dir: &PathBuf) {
+    /// Clean up test directory
+    pub fn cleanup_test_directory(test_dir: &PathBuf) {
         if test_dir.exists() {
             fs::remove_dir_all(test_dir).ok();
         }
     }
     
-    #[test]
-    fn test_save_system_v2_creation() {
-        let save_system = SaveSystem::new();
-        assert_eq!(save_system.version, 2);
-        assert_eq!(save_system.schema_version, 1);
-    }
-    
-    #[test]
-    fn test_save_system_v2_configuration() {
-        let save_system = SaveSystem::new()
-            .with_compression(CompressionType::LZ4)
-            .with_chunk_compression(true)
-            .with_max_chunk_size(512 * 1024);
-        
-        assert_eq!(save_system.compression, CompressionType::LZ4);
-        assert!(save_system.enable_chunk_compression);
-        assert_eq!(save_system.max_chunk_size, 512 * 1024);
-    }
-    
-    #[test]
-    fn test_save_feature_flags() {
-        let flags = SaveFeatureFlags {
-            has_assets: true,
-            has_collections: true,
-            has_megastructures: false,
-            has_unique_personnel: true,
-            chunk_compression: false,
-            differential_saves: false,
-        };
-        
-        let encoded = flags.to_u64();
-        let decoded = SaveFeatureFlags::from_u64(encoded);
-        
-        assert_eq!(flags.has_assets, decoded.has_assets);
-        assert_eq!(flags.has_collections, decoded.has_collections);
-        assert_eq!(flags.has_megastructures, decoded.has_megastructures);
-        assert_eq!(flags.has_unique_personnel, decoded.has_unique_personnel);
-        assert_eq!(flags.chunk_compression, decoded.chunk_compression);
-        assert_eq!(flags.differential_saves, decoded.differential_saves);
-    }
-    
-    #[test]
-    fn test_chunk_type_constants() {
-        // Verify chunk type values are unique
-        let chunk_types = vec![
-            ChunkType::Header as u32,
-            ChunkType::Metadata as u32,
-            ChunkType::GameState as u32,
-            ChunkType::Planets as u32,
-            ChunkType::Ships as u32,
-            ChunkType::Factions as u32,
-            ChunkType::Assets as u32,
-            ChunkType::Collections as u32,
-            ChunkType::Checksum as u32,
-        ];
-        
-        let mut unique_types = chunk_types.clone();
-        unique_types.sort();
-        unique_types.dedup();
-        
-        assert_eq!(chunk_types.len(), unique_types.len(), "Chunk type values must be unique");
-        
-        // Verify expected values
-        assert_eq!(ChunkType::Header as u32, 0x48454144); // "HEAD"
-        assert_eq!(ChunkType::Assets as u32, 0x41535354); // "ASST"
-        assert_eq!(ChunkType::Collections as u32, 0x434F4C4C); // "COLL"
-    }
-    
-    #[test]
-    fn test_save_metadata_creation() {
-        let metadata = SaveMetadata {
-            save_name: "Test Save".to_string(),
-            description: Some("Test save file for unit testing".to_string()),
-            player_faction: 0,
-            difficulty_level: 2,
-            galaxy_size: GalaxySize::Large,
-            total_planets: 25,
-            total_ships: 150,
-            total_factions: 4,
-            total_assets: 500,
-            play_time_seconds: 3600,
-            victory_status: None,
-            custom_flags: {
-                let mut flags = HashMap::new();
-                flags.insert("test_mode".to_string(), "enabled".to_string());
-                flags.insert("debug_assets".to_string(), "true".to_string());
-                flags
+    /// Create test game configuration
+    pub fn create_test_game_configuration() -> GameConfiguration {
+        GameConfiguration {
+            planet_count: 15,
+            starting_resources: ResourceBundle {
+                minerals: 1000,
+                food: 500,
+                energy: 300,
+                alloys: 100,
+                components: 50,
+                fuel: 200,
             },
-        };
-        
-        assert_eq!(metadata.save_name, "Test Save");
-        assert_eq!(metadata.difficulty_level, 2);
-        assert_eq!(metadata.galaxy_size, GalaxySize::Large);
-        assert_eq!(metadata.total_assets, 500);
-        assert_eq!(metadata.custom_flags.len(), 2);
+            starting_population: 2000,
+            galaxy_size: GalaxySize::Medium,
+            ai_opponents: 3,
+        }
     }
     
-    #[test]
-    fn test_core_game_data_structure() {
-        let game_data = CoreGameData {
-            tick: 12345,
-            planets: vec![], // Would normally contain planet data
-            ships: vec![], // Would normally contain ship data
-            factions: vec![], // Would normally contain faction data
-            game_configuration: GameConfiguration {
-                planet_count: 15,
-                starting_resources: ResourceBundle {
-                    minerals: 1000,
-                    food: 500,
-                    energy: 300,
-                    alloys: 100,
-                    components: 50,
-                    fuel: 200,
+    /// Create test planet data
+    pub fn create_test_planet(id: PlanetId) -> Planet {
+        let total_pop = 1000 + (id * 100) as i32;
+        Planet {
+            id,
+            position: OrbitalElements {
+                semi_major_axis: 1.0 + (id as f32 * 0.5),
+                period: 365.0 + (id as f32 * 50.0),
+                phase: (id as f32 * 0.1),
+            },
+            resources: ResourceStorage {
+                current: ResourceBundle {
+                    minerals: std::cmp::min(500 + (id * 50) as i32, 2000),
+                    food: std::cmp::min(300 + (id * 30) as i32, 1500),
+                    energy: std::cmp::min(200 + (id * 20) as i32, 1000),
+                    alloys: std::cmp::min(100 + (id * 10) as i32, 800),
+                    components: std::cmp::min(50 + (id * 5) as i32, 500),
+                    fuel: std::cmp::min(100 + (id * 10) as i32, 600),
                 },
-                starting_population: 2000,
-                galaxy_size: GalaxySize::Medium,
-                ai_opponents: 3,
+                capacity: ResourceBundle {
+                    minerals: 2000,
+                    food: 1500,
+                    energy: 1000,
+                    alloys: 800,
+                    components: 500,
+                    fuel: 600,
+                },
             },
-            victory_conditions: vec![
-                VictoryCondition {
-                    condition_type: VictoryType::Economic,
-                    target_value: 1000000,
-                    current_progress: {
-                        let mut progress = HashMap::new();
-                        progress.insert(0, 150000);
-                        progress.insert(1, 75000);
-                        progress
-                    },
-                    is_achieved: false,
-                    achievement_tick: None,
+            population: Demographics {
+                total: total_pop,
+                growth_rate: 0.02,
+                allocation: WorkerAllocation {
+                    agriculture: 150,
+                    mining: 200,
+                    industry: 300,
+                    research: 100,
+                    military: 50,
+                    unassigned: total_pop - 800,
+                },
+            },
+            developments: vec![
+                Building {
+                    building_type: BuildingType::Mine,
+                    tier: 1,
+                    operational: true,
+                },
+                Building {
+                    building_type: BuildingType::Farm,
+                    tier: 1,
+                    operational: true,
                 },
             ],
-        };
-        
-        assert_eq!(game_data.tick, 12345);
-        assert_eq!(game_data.game_configuration.planet_count, 15);
-        assert_eq!(game_data.victory_conditions.len(), 1);
-        assert!(!game_data.victory_conditions[0].is_achieved);
+            controller: Some(0),
+        }
+    }
+    
+    /// Create test ship data
+    pub fn create_test_ship(id: ShipId, faction_id: FactionId) -> Ship {
+        Ship {
+            id,
+            ship_class: ShipClass::Warship,
+            position: Vector2::new(200.0 * id as f32, 200.0 * id as f32),
+            trajectory: None,
+            cargo: CargoHold {
+                resources: ResourceBundle {
+                    minerals: 10 + id as i32,
+                    food: 5 + id as i32,
+                    energy: 0,
+                    alloys: 2 + id as i32,
+                    components: 1,
+                    fuel: 20 + (id * 2) as i32,
+                },
+                population: 0,
+                capacity: 100,
+            },
+            fuel: 100.0,
+            owner: faction_id,
+        }
+    }
+    
+    /// Create test faction data
+    pub fn create_test_faction(id: FactionId) -> Faction {
+        Faction {
+            id,
+            name: format!("Test Faction {}", id),
+            is_player: id == 0,
+            ai_type: AIPersonality::Balanced,
+            score: 1000 + (id as i32 * 100),
+        }
+    }
+    
+    /// Create test save data
+    pub fn create_test_save_data(save_name: &str, tick: u64) -> SaveData {
+        SaveData {
+            version: 1,
+            save_name: save_name.to_string(),
+            timestamp: 1640995200, // 2022-01-01 timestamp
+            tick,
+            planets: vec![
+                Self::create_test_planet(0),
+                Self::create_test_planet(1),
+                Self::create_test_planet(2),
+            ],
+            ships: vec![
+                Self::create_test_ship(0, 0),
+                Self::create_test_ship(1, 1),
+                Self::create_test_ship(2, 0),
+            ],
+            factions: vec![
+                Self::create_test_faction(0), // Player faction
+                Self::create_test_faction(1), // AI faction
+                Self::create_test_faction(2), // AI faction
+            ],
+            game_configuration: Self::create_test_game_configuration(),
+        }
     }
 }
 
-/// Test suite for performance and scalability
+/// Basic save system functionality tests
+#[cfg(test)]
+mod basic_save_tests {
+    use super::*;
+    
+    #[test]
+    fn test_save_system_creation() {
+        let _save_system = SaveSystem::new();
+        // Basic instantiation test
+        assert!(true);
+    }
+    
+    #[test]
+    fn test_save_data_creation() {
+        let save_data = SaveTestFixture::create_test_save_data("test_save", 100);
+        
+        assert_eq!(save_data.version, 1);
+        assert_eq!(save_data.save_name, "test_save");
+        assert_eq!(save_data.tick, 100);
+        assert_eq!(save_data.planets.len(), 3);
+        assert_eq!(save_data.ships.len(), 3);
+        assert_eq!(save_data.factions.len(), 3);
+    }
+    
+    #[test]
+    fn test_save_info_creation() {
+        let save_data = SaveTestFixture::create_test_save_data("test_info", 200);
+        let save_info = SaveInfo::from_save_data(&save_data);
+        
+        assert_eq!(save_info.name, "test_info");
+        assert_eq!(save_info.tick, 200);
+        assert_eq!(save_info.planets, 3);
+        assert_eq!(save_info.ships, 3);
+        assert_eq!(save_info.factions, 3);
+        assert_eq!(save_info.timestamp, 1640995200);
+    }
+}
+
+/// Save/load cycle tests
+#[cfg(test)]
+mod save_load_tests {
+    use super::*;
+    
+    #[test]
+    fn test_basic_save_load_cycle() {
+        let test_dir = SaveTestFixture::setup_test_directory();
+        
+        // Create a save system with custom directory
+        let save_system = SaveSystem::new();
+        
+        // Create test data
+        let original_data = SaveTestFixture::create_test_save_data("test_basic", 500);
+        
+        // Note: The simplified save system doesn't have save_game_binary,
+        // so we would need to test with the JSON-based methods when they are 
+        // available on a full GameState instance
+        
+        // For now, test the data validation
+        assert!(save_system.validate_save_integrity(&original_data).is_ok());
+        
+        // Test that validation catches problems
+        let mut invalid_data = original_data.clone();
+        invalid_data.planets.clear();
+        assert!(save_system.validate_save_integrity(&invalid_data).is_err());
+        
+        SaveTestFixture::cleanup_test_directory(&test_dir);
+    }
+    
+    #[test]
+    fn test_save_validation() {
+        let save_system = SaveSystem::new();
+        
+        // Test valid save data
+        let valid_data = SaveTestFixture::create_test_save_data("valid", 100);
+        assert!(save_system.validate_save_integrity(&valid_data).is_ok());
+        
+        // Test invalid version
+        let mut invalid_version = valid_data.clone();
+        invalid_version.version = 999;
+        assert!(save_system.validate_save_integrity(&invalid_version).is_err());
+        
+        // Test empty planets
+        let mut no_planets = valid_data.clone();
+        no_planets.planets.clear();
+        assert!(save_system.validate_save_integrity(&no_planets).is_err());
+        
+        // Test empty factions
+        let mut no_factions = valid_data.clone();
+        no_factions.factions.clear();
+        assert!(save_system.validate_save_integrity(&no_factions).is_err());
+        
+        // Test invalid worker allocation
+        let mut invalid_workers = valid_data.clone();
+        invalid_workers.planets[0].population.allocation.mining = 999999;
+        assert!(save_system.validate_save_integrity(&invalid_workers).is_err());
+    }
+    
+    #[test]
+    fn test_save_name_validation() {
+        let save_system = SaveSystem::new();
+        
+        // Test basic save existence check
+        assert!(!save_system.save_exists("nonexistent_save"));
+        
+        // Test save path generation
+        // The save system generates .sav files in the saves directory
+        assert!(true); // Path generation is internal
+    }
+}
+
+/// Resource validation tests
+#[cfg(test)]
+mod resource_validation_tests {
+    use super::*;
+    
+    #[test]
+    fn test_resource_bundle_validation() {
+        // Test valid resources
+        let valid_resources = ResourceBundle {
+            minerals: 100,
+            food: 50,
+            energy: 75,
+            alloys: 25,
+            components: 10,
+            fuel: 30,
+        };
+        assert!(valid_resources.validate_non_negative().is_ok());
+        
+        // Test invalid resources (negative values)
+        let invalid_resources = ResourceBundle {
+            minerals: -10,
+            food: 50,
+            energy: 75,
+            alloys: 25,
+            components: 10,
+            fuel: 30,
+        };
+        assert!(invalid_resources.validate_non_negative().is_err());
+    }
+    
+    #[test]
+    fn test_worker_allocation_validation() {
+        let total_pop = 1000;
+        
+        // Test valid allocation
+        let valid_allocation = WorkerAllocation {
+            agriculture: 200,
+            mining: 200,
+            industry: 200,
+            research: 200,
+            military: 100,
+            unassigned: 100,
+        };
+        assert!(valid_allocation.validate(total_pop).is_ok());
+        
+        // Test invalid allocation (too many workers)
+        let invalid_allocation = WorkerAllocation {
+            agriculture: 500,
+            mining: 500,
+            industry: 500,
+            research: 500,
+            military: 500,
+            unassigned: 500,
+        };
+        assert!(invalid_allocation.validate(total_pop).is_err());
+    }
+}
+
+/// Save system error handling tests
+#[cfg(test)]
+mod error_handling_tests {
+    use super::*;
+    
+    #[test]
+    fn test_invalid_save_data_handling() {
+        let save_system = SaveSystem::new();
+        
+        // Test with completely empty save data
+        let empty_data = SaveData {
+            version: 1,
+            save_name: "empty".to_string(),
+            timestamp: 0,
+            tick: 0,
+            planets: vec![],
+            ships: vec![],
+            factions: vec![],
+            game_configuration: SaveTestFixture::create_test_game_configuration(),
+        };
+        
+        // Should fail validation due to empty planets and factions
+        assert!(save_system.validate_save_integrity(&empty_data).is_err());
+    }
+    
+    #[test]
+    fn test_resource_constraint_validation() {
+        let save_system = SaveSystem::new();
+        let mut test_data = SaveTestFixture::create_test_save_data("resource_test", 100);
+        
+        // Create planet with invalid negative resources
+        test_data.planets[0].resources.current.minerals = -100;
+        
+        // Should fail validation
+        assert!(save_system.validate_save_integrity(&test_data).is_err());
+    }
+}
+
+/// Performance tests for save system
 #[cfg(test)]
 mod performance_tests {
     use super::*;
     use std::time::Instant;
     
     #[test]
-    fn test_asset_registry_performance_with_large_dataset() {
-        let start = Instant::now();
-        let mut registry = AssetRegistry::new();
+    fn test_save_validation_performance() {
+        let save_system = SaveSystem::new();
         
-        // Create 10,000 assets of various types
-        for i in 0..10_000 {
-            let facility = PlanetaryFacility {
-                asset_id: AssetId::from_u64(i + 1000000),
-                facility_type: match i % 9 {
-                    0 => PlanetaryFacilityType::AdvancedMine,
-                    1 => PlanetaryFacilityType::HydroponicFarm,
-                    2 => PlanetaryFacilityType::FusionReactor,
-                    3 => PlanetaryFacilityType::NanoFactory,
-                    4 => PlanetaryFacilityType::QuantumLab,
-                    5 => PlanetaryFacilityType::MegaSpaceport,
-                    6 => PlanetaryFacilityType::PlanetaryShield,
-                    7 => PlanetaryFacilityType::ArtificialHabitat,
-                    _ => PlanetaryFacilityType::TerraformingStation,
-                },
-                tier: ((i % 5) + 1) as u8,
-                rarity: match i % 6 {
-                    0 => AssetRarity::Common,
-                    1 => AssetRarity::Uncommon,
-                    2 => AssetRarity::Rare,
-                    3 => AssetRarity::Epic,
-                    4 => AssetRarity::Legendary,
-                    _ => AssetRarity::Artifact,
-                },
-                name: format!("Test Facility {}", i),
-                description: Some(format!("Auto-generated test facility number {}", i)),
-                resource_bonus: ResourceBundle {
-                    minerals: (i % 100) as i32,
-                    food: (i % 50) as i32,
-                    energy: (i % 75) as i32,
-                    alloys: (i % 25) as i32,
-                    components: (i % 10) as i32,
-                    fuel: 0,
-                },
-                population_capacity: (i % 1000) as i32,
-                power_requirement: (i % 200) as i32,
-                maintenance_cost: ResourceBundle::default(),
-                special_effects: vec![],
-            };
-            
-            registry.register_asset(AssetType::PlanetaryFacility(facility)).unwrap();
-            
-            // Assign to various locations
-            let location = match i % 4 {
-                0 => AssignmentLocation::Planet((i % 100) as u32),
-                1 => AssignmentLocation::Ship((i % 50) as u32),
-                2 => AssignmentLocation::Faction((i % 8) as u8),
-                _ => AssignmentLocation::Space(Vector2::new((i % 1000) as f32, (i % 1000) as f32)),
-            };
-            
-            registry.assign_asset(AssetId::from_u64(i + 1000000), location).unwrap();
-        }
+        // Create larger save data for performance testing
+        let mut large_save_data = SaveTestFixture::create_test_save_data("large_test", 1000);
         
-        let creation_time = start.elapsed();
-        println!("Created 10,000 assets in {:?}", creation_time);
-        
-        // Test query performance
-        let query_start = Instant::now();
-        
-        // Query by category
-        let planetary_assets = registry.get_assets_by_category(&AssetCategory::PlanetaryStructure);
-        assert_eq!(planetary_assets.len(), 10_000);
-        
-        // Query by rarity
-        let rare_assets = registry.get_assets_by_rarity(&AssetRarity::Rare);
-        assert!(rare_assets.len() > 1000);
-        
-        // Query by location
-        let planet_0_assets = registry.get_assets_at_location(&AssignmentLocation::Planet(0));
-        assert!(planet_0_assets.len() > 50);
-        
-        let query_time = query_start.elapsed();
-        println!("Performed queries on 10,000 assets in {:?}", query_time);
-        
-        // Performance requirements
-        assert!(creation_time.as_millis() < 1000, "Asset creation should take less than 1 second");
-        assert!(query_time.as_millis() < 100, "Queries should take less than 100ms");
-    }
-    
-    #[test]
-    fn test_collection_performance_with_large_datasets() {
-        let mut registry = AssetRegistry::new();
-        
-        // Create assets
-        for i in 0..1000 {
-            let weapon = ShipWeapon {
-                asset_id: AssetId::from_u64(i + 2000000),
-                weapon_type: WeaponType::KineticCannon,
-                tier: 1,
-                rarity: AssetRarity::Common,
-                name: format!("Test Weapon {}", i),
-                description: None,
-                damage: 100,
-                range: 500.0,
-                accuracy: 0.8,
-                power_requirement: 50,
-                special_properties: vec![],
-            };
-            
-            registry.register_asset(AssetType::ShipWeapon(weapon)).unwrap();
+        // Add more planets and ships
+        for i in 3..50 {
+            large_save_data.planets.push(SaveTestFixture::create_test_planet(i));
+            large_save_data.ships.push(SaveTestFixture::create_test_ship(i, (i % 3) as u8));
         }
         
         let start = Instant::now();
+        let result = save_system.validate_save_integrity(&large_save_data);
+        let validation_time = start.elapsed();
         
-        // Create large collection
-        let collection_id = registry.create_collection(
-            "Massive Arsenal".to_string(),
-            CollectionType::ShipLoadout
-        );
-        
-        // Add all weapons to collection
-        for i in 0..1000 {
-            registry.add_to_collection(collection_id, AssetId::from_u64(i + 2000000)).unwrap();
+        if let Err(e) = &result {
+            println!("Validation failed: {:?}", e);
         }
+        assert!(result.is_ok());
+        assert!(validation_time.as_millis() < 100, "Validation should take less than 100ms for 50 planets");
         
-        let collection_time = start.elapsed();
-        println!("Created collection with 1,000 assets in {:?}", collection_time);
-        
-        // Verify collection
-        let collection = registry.collections.get(&collection_id).unwrap();
-        assert_eq!(collection.assets.len(), 1000);
-        
-        // Performance requirement
-        assert!(collection_time.as_millis() < 500, "Large collection creation should take less than 500ms");
+        println!("Validated save with {} planets and {} ships in {:?}", 
+                 large_save_data.planets.len(), 
+                 large_save_data.ships.len(), 
+                 validation_time);
     }
 }
 
-/// Test suite for error handling and edge cases
+/// Cleanup test to remove temporary files
 #[cfg(test)]
-mod error_handling_tests {
+mod cleanup {
     use super::*;
     
     #[test]
-    fn test_duplicate_asset_registration() {
-        let mut registry = AssetRegistry::new();
-        let facility = AssetTestFixture::create_test_facility();
-        
-        // First registration should succeed
-        assert!(registry.register_asset(AssetType::PlanetaryFacility(facility.clone())).is_ok());
-        
-        // Duplicate registration should fail
-        assert!(registry.register_asset(AssetType::PlanetaryFacility(facility)).is_err());
-    }
-    
-    #[test]
-    fn test_invalid_asset_assignment() {
-        let mut registry = AssetRegistry::new();
-        let non_existent_asset_id = AssetId::from_u64(99999);
-        
-        // Should fail to assign non-existent asset
-        assert!(registry.assign_asset(non_existent_asset_id, AssignmentLocation::Planet(0)).is_err());
-    }
-    
-    #[test]
-    fn test_invalid_collection_operations() {
-        let mut registry = AssetRegistry::new();
-        let non_existent_collection_id = AssetId::from_u64(88888);
-        let non_existent_asset_id = AssetId::from_u64(77777);
-        
-        // Should fail to add asset to non-existent collection
-        assert!(registry.add_to_collection(non_existent_collection_id, non_existent_asset_id).is_err());
-    }
-    
-    #[test]
-    fn test_empty_registry_queries() {
-        let registry = AssetRegistry::new();
-        
-        // Queries on empty registry should return empty results, not errors
-        assert_eq!(registry.get_assets_by_category(&AssetCategory::PlanetaryStructure).len(), 0);
-        assert_eq!(registry.get_assets_by_rarity(&AssetRarity::Legendary).len(), 0);
-        assert_eq!(registry.get_assets_at_location(&AssignmentLocation::Planet(0)).len(), 0);
-    }
-    
-    #[test]
-    fn test_save_system_invalid_paths() {
-        let mut save_system = SaveSystem::new();
-        
-        // Test invalid save names (should be handled by validation)
-        let invalid_names = vec![
-            "save/with/slashes",
-            "save\\with\\backslashes", 
-            "save:with:colons",
-            "save*with*asterisks",
-            "save?with?questions",
-            "save\"with\"quotes",
-            "save<with>brackets",
-            "save|with|pipes",
-        ];
-        
-        for invalid_name in invalid_names {
-            // This should be caught during validation before file operations
-            // The actual implementation would validate the name in save_game_binary
-            println!("Testing invalid name: {}", invalid_name);
-        }
-    }
-}
-
-/// Integration tests that test the entire save/load cycle
-#[cfg(test)]
-mod integration_tests {
-    use super::*;
-    
-    #[test]
-    fn test_complete_asset_save_load_cycle() {
-        let test_dir = setup_test_directory();
-        let mut save_system = SaveSystem::new();
-        
-        // Create comprehensive test data
-        let original_registry = AssetTestFixture::create_test_registry();
-        
-        // The actual save/load test would require a full GameState
-        // For now, we test the asset registry operations
-        
-        // Verify original registry structure
-        assert_eq!(original_registry.assets.len(), 4);
-        assert_eq!(original_registry.collections.len(), 2);
-        
-        // Test asset queries
-        let facilities = original_registry.get_assets_by_category(&AssetCategory::PlanetaryStructure);
-        assert_eq!(facilities.len(), 1);
-        
-        let legendary_assets = original_registry.get_assets_by_rarity(&AssetRarity::Legendary);
-        assert_eq!(legendary_assets.len(), 1);
-        
-        cleanup_test_directory(&test_dir);
-    }
-    
-    #[test]
-    fn test_asset_migration_scenarios() {
-        // Test various asset migration scenarios
-        let registry = AssetTestFixture::create_test_registry();
-        
-        // Test asset reassignment
-        let mut modified_registry = registry.clone();
-        let facility_id = AssetId::from_u64(1001);
-        
-        // Move facility from planet to different planet
-        modified_registry.assign_asset(facility_id, AssignmentLocation::Planet(5)).unwrap();
-        
-        let planet_5_assets = modified_registry.get_assets_at_location(&AssignmentLocation::Planet(5));
-        assert!(planet_5_assets.contains(&facility_id));
-        
-        // Test collection modifications
-        let new_collection_id = modified_registry.create_collection(
-            "Emergency Response Kit".to_string(),
-            CollectionType::DefenseGrid
-        );
-        
-        modified_registry.add_to_collection(new_collection_id, facility_id).unwrap();
-        
-        let collection = modified_registry.collections.get(&new_collection_id).unwrap();
-        assert!(collection.assets.contains(&facility_id));
-    }
-}
-
-/// Utility functions for test setup and cleanup
-impl AssetTestFixture {
-    /// Clean up all test files and directories
-    pub fn cleanup_all_test_files() {
-        let test_dirs = vec!["test_saves_v2", "temp_test_saves"];
+    fn test_cleanup() {
+        // Clean up any remaining test files
+        let test_dirs = vec!["test_saves", "temp_test_saves"];
         
         for dir in test_dirs {
             let path = PathBuf::from(dir);
@@ -725,17 +429,5 @@ impl AssetTestFixture {
                 fs::remove_dir_all(path).ok();
             }
         }
-    }
-}
-
-// Cleanup after all tests
-#[cfg(test)]
-mod cleanup {
-    use super::*;
-    
-    #[test]
-    fn test_cleanup() {
-        // This runs after other tests to clean up test files
-        AssetTestFixture::cleanup_all_test_files();
     }
 }

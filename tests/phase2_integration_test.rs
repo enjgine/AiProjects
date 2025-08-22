@@ -6,8 +6,8 @@ use stellar_dominion::core::events::PlayerCommand;
 fn test_toolbar_initialization() -> GameResult<()> {
     let game_state = GameState::new()?;
     
-    // Verify the UIRenderer has toolbar components initialized
-    // This is a basic smoke test to ensure the new Phase 2 components don't break initialization
+    // Verify the UI system has been initialized correctly
+    // This is a basic smoke test to ensure the new ui_v2 system doesn't break initialization
     assert!(game_state.time_manager.get_current_tick() == 0);
     
     Ok(())

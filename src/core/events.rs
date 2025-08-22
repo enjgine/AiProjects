@@ -35,6 +35,25 @@ pub enum PlayerCommand {
     ExitGame,
     BackToMenu,
     GameOptions,
+    ClosePlanetPanel,
+    // UI panel commands
+    ShowPlanet(PlanetId),
+    ShowResourcePanel,
+    BuildDevelopment(PlanetId, String),
+    BuildShip(PlanetId, String),
+    RecallShip(ShipId),
+    StopShip(ShipId),
+    ScoutLocation(Vector2),
+    CloseShipPanel,
+    ShowShip(ShipId),
+    // Additional UI commands
+    ShowFaction(FactionId),
+    OpenDiplomacy(FactionId),
+    ProposeTradeAgreement(FactionId),
+    ShowFactionTerritory(FactionId),
+    ShowIntelligenceReport(FactionId),
+    CloseFactionPanel,
+    ManageWorkers(PlanetId),
 }
 
 #[derive(Debug, Clone)]
@@ -99,7 +118,6 @@ impl EventBus {
             event_history: VecDeque::with_capacity(100),
             history_limit: 100,
             update_order: vec![
-                SystemId::UIRenderer,
                 SystemId::PhysicsEngine,
                 SystemId::ResourceSystem,
                 SystemId::PopulationSystem,
